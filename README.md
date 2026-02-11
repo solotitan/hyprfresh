@@ -157,13 +157,13 @@ hyprfresh --config /path/to/config.toml
 
 ## Roadmap
 
-- [ ] Core idle detection daemon
-- [ ] wlr-layer-shell surface creation
-- [ ] wgpu rendering pipeline
-- [ ] Built-in screensavers (blank, matrix, starfield)
-- [ ] Session-wide idle via ext-idle-notify-v1
-- [ ] Preview mode
-- [ ] Custom shader loading from files
+- [x] Core idle detection daemon
+- [x] wlr-layer-shell surface creation
+- [x] wgpu rendering pipeline
+- [x] Built-in screensavers (blank, matrix, starfield)
+- [x] Session-wide idle via ext-idle-notify-v1
+- [x] Preview mode (`--preview`, `--monitor`, `--duration`)
+- [x] Custom shader loading from `~/.config/hypr/hyprfresh/shaders/`
 - [ ] Plugin system for external screensaver modules
 - [ ] AUR package
 - [ ] Nix flake

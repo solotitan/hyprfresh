@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 /// Blank screensaver - just a black screen
 /// Useful for OLED burn-in prevention or minimal power usage
+#[allow(dead_code)]
 pub struct Blank;
 
 impl Blank {

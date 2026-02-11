@@ -2,6 +2,7 @@ use super::Screensaver;
 use std::collections::HashMap;
 
 /// Matrix digital rain screensaver
+#[allow(dead_code)]
 pub struct Matrix {
     time: f32,
     color_r: f32,
@@ -41,12 +42,12 @@ impl Screensaver for Matrix {
             self.density = *d as f32;
         }
         // Allow custom color via [screensaver.options] color = [r, g, b]
-        if let Some(toml::Value::Array(c)) = options.get("color") {
-            if c.len() >= 3 {
-                self.color_r = c[0].as_float().unwrap_or(0.0) as f32;
-                self.color_g = c[1].as_float().unwrap_or(1.0) as f32;
-                self.color_b = c[2].as_float().unwrap_or(0.0) as f32;
-            }
+        if let Some(toml::Value::Array(c)) = options.get("color")
+            && c.len() >= 3
+        {
+            self.color_r = c[0].as_float().unwrap_or(0.0) as f32;
+            self.color_g = c[1].as_float().unwrap_or(1.0) as f32;
+            self.color_b = c[2].as_float().unwrap_or(0.0) as f32;
         }
     }
 

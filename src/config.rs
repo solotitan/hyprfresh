@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 
 /// Top-level configuration for HyprFresh
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Clone)]
 pub struct Config {
     #[serde(default)]
     pub general: GeneralConfig,
@@ -50,6 +50,7 @@ pub struct MonitorConfig {
 }
 
 /// Screensaver rendering settings
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct ScreensaverConfig {
     /// Which screensaver to use (default: "matrix")
@@ -92,16 +93,6 @@ fn default_true() -> bool {
     true
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            general: GeneralConfig::default(),
-            monitors: HashMap::new(),
-            screensaver: ScreensaverConfig::default(),
-        }
-    }
-}
-
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
@@ -130,5 +121,45 @@ impl Config {
         let content = fs::read_to_string(path)?;
         let config: Config = toml::from_str(&content)?;
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_idle_defaults() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.general.session_idle);
+        assert_eq!(config.general.session_idle_timeout, 600);
+    }
+
+    #[test]
+    fn session_idle_explicit_config() {
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            session_idle = false
+            session_idle_timeout = 900
+            "#,
+        )
+        .unwrap();
+        assert!(!config.general.session_idle);
+        assert_eq!(config.general.session_idle_timeout, 900);
+    }
+
+    #[test]
+    fn session_idle_enabled_with_custom_timeout() {
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            session_idle = true
+            session_idle_timeout = 120
+            "#,
+        )
+        .unwrap();
+        assert!(config.general.session_idle);
+        assert_eq!(config.general.session_idle_timeout, 120);
     }
 }
