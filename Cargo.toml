@@ -45,11 +45,6 @@ clap = { version = "4", features = ["derive"] }
 # Async runtime (for Hyprland IPC event listener)
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
 
-# Math for screensaver animations
-glam = "0.29"
-
-# Random (for screensaver effects)
-rand = "0.9"
 
 [profile.release]
 opt-level = 3

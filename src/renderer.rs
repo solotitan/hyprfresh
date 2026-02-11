@@ -807,6 +807,13 @@ impl LayerShellHandler for WaylandState {
             .copied()
             .unwrap_or(caps.formats[0]);
 
+        // Select best present mode: prefer Mailbox (low-latency) but fall back to Fifo (always supported)
+        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            wgpu::PresentMode::Mailbox
+        } else {
+            wgpu::PresentMode::Fifo
+        };
+
         // Configure the wgpu surface
         surface.wgpu_surface.configure(
             &self.gpu.device,
@@ -818,7 +825,7 @@ impl LayerShellHandler for WaylandState {
                 width,
                 height,
                 desired_maximum_frame_latency: 2,
-                present_mode: wgpu::PresentMode::Mailbox,
+                present_mode,
             },
         );
 

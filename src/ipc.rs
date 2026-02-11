@@ -139,8 +139,18 @@ fn parse_event(line: &str) -> HyprEvent {
     // Hyprland event format: "EVENT>>DATA"
     if let Some((event, data)) = line.split_once(">>") {
         match event {
-            "monitoradded" | "monitoraddedv2" => HyprEvent::MonitorAdded(data.to_string()),
-            "monitorremoved" | "monitorremovedv2" => HyprEvent::MonitorRemoved(data.to_string()),
+            "monitoradded" => HyprEvent::MonitorAdded(data.to_string()),
+            // monitoraddedv2 format: "id,name,description"
+            "monitoraddedv2" => {
+                let name = data.splitn(3, ',').nth(1).unwrap_or(data).to_string();
+                HyprEvent::MonitorAdded(name)
+            }
+            "monitorremoved" => HyprEvent::MonitorRemoved(data.to_string()),
+            // monitorremovedv2 format: "id,name"
+            "monitorremovedv2" => {
+                let name = data.splitn(3, ',').nth(1).unwrap_or(data).to_string();
+                HyprEvent::MonitorRemoved(name)
+            }
             "focusedmon" => {
                 // focusedmon>>MONNAME,WORKSPACE
                 let monitor = data.split(',').next().unwrap_or(data).to_string();
@@ -169,8 +179,16 @@ mod tests {
     #[test]
     fn parse_monitor_added_v2() {
         match parse_event("monitoraddedv2>>1,DP-2,some desc") {
-            HyprEvent::MonitorAdded(data) => assert_eq!(data, "1,DP-2,some desc"),
+            HyprEvent::MonitorAdded(name) => assert_eq!(name, "DP-2"),
             other => panic!("Expected MonitorAdded, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_monitor_removed_v2() {
+        match parse_event("monitorremovedv2>>1,HDMI-A-1") {
+            HyprEvent::MonitorRemoved(name) => assert_eq!(name, "HDMI-A-1"),
+            other => panic!("Expected MonitorRemoved, got {:?}", other),
         }
     }
 
