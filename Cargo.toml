@@ -45,6 +45,9 @@ clap = { version = "4", features = ["derive"] }
 # Async runtime (for Hyprland IPC event listener)
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
 
+# Signal handling (Ctrl+C / SIGTERM)
+ctrlc = "3"
+
 
 [profile.release]
 opt-level = 3

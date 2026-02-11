@@ -9,6 +9,8 @@ use log::{error, info, warn};
 use renderer::{RendererCommand, WaylandState};
 use smithay_client_toolkit::reexports::calloop::{self, EventLoop};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// HyprFresh - A native Wayland screensaver daemon for Hyprland
@@ -26,6 +28,14 @@ struct Cli {
     /// Run a specific screensaver immediately (bypass idle detection)
     #[arg(short, long)]
     preview: Option<String>,
+
+    /// Only preview on a specific monitor (e.g. DP-1)
+    #[arg(short, long, requires = "preview")]
+    monitor: Option<String>,
+
+    /// Auto-exit preview after N seconds
+    #[arg(short, long, requires = "preview")]
+    duration: Option<u64>,
 
     /// List available screensavers
     #[arg(long)]
@@ -60,8 +70,12 @@ fn main() {
 
     // Preview mode: run a screensaver immediately
     if let Some(ref name) = cli.preview {
+        if !screensavers::is_valid(name) {
+            error!("Unknown screensaver '{}'. Use --list to see available options.", name);
+            std::process::exit(1);
+        }
         info!("Preview mode: running screensaver '{}'", name);
-        run_preview(name);
+        run_preview(name, cli.monitor.as_deref(), cli.duration);
         return;
     }
 
@@ -108,6 +122,15 @@ fn run_daemon(cfg: config::Config) {
             }
         })
         .expect("failed to insert command channel");
+
+    // Handle SIGINT/SIGTERM for graceful cleanup
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    if let Err(e) = ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    }) {
+        warn!("Failed to set signal handler: {}", e);
+    }
 
     // Spawn the tokio runtime on a background thread for the idle loop + IPC
     let idle_config = cfg.clone();
@@ -174,9 +197,10 @@ fn run_daemon(cfg: config::Config) {
     // Run the calloop event loop on the main thread (Wayland requires this)
     info!("Starting Wayland event loop");
     loop {
-        // Process any pending commands before dispatching
-        // We need a QueueHandle but calloop manages that internally via WaylandSource.
-        // Commands are processed via the calloop channel callback above.
+        if !running.load(Ordering::SeqCst) {
+            info!("Signal received, shutting down");
+            break;
+        }
 
         if let Err(e) = event_loop.dispatch(std::time::Duration::from_millis(16), &mut state) {
             error!("Event loop error: {}", e);
@@ -192,7 +216,7 @@ fn run_daemon(cfg: config::Config) {
 }
 
 /// Run a screensaver in preview mode (immediate, no idle detection)
-fn run_preview(screensaver_name: &str) {
+fn run_preview(screensaver_name: &str, monitor_filter: Option<&str>, duration: Option<u64>) {
     let (mut state, event_queue, conn) = match WaylandState::new() {
         Ok(s) => s,
         Err(e) => {
@@ -201,12 +225,21 @@ fn run_preview(screensaver_name: &str) {
         }
     };
 
-    let mut event_loop: EventLoop<WaylandState> = EventLoop::try_new()
-        .expect("failed to create event loop");
+    let mut event_loop: EventLoop<WaylandState> =
+        EventLoop::try_new().expect("failed to create event loop");
 
     WaylandSource::new(conn, event_queue)
         .insert(event_loop.handle())
         .expect("failed to insert Wayland source");
+
+    // Handle SIGINT/SIGTERM for graceful cleanup
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    if let Err(e) = ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    }) {
+        warn!("Failed to set signal handler: {}", e);
+    }
 
     // Wait for outputs to be enumerated
     info!("Waiting for output enumeration...");
@@ -222,25 +255,63 @@ fn run_preview(screensaver_name: &str) {
         std::process::exit(1);
     }
 
-    // Start screensaver on all outputs
-    let names = state.output_names();
-    for name in &names {
+    // Determine which outputs to use
+    let all_names = state.output_names();
+    let targets: Vec<String> = if let Some(filter) = monitor_filter {
+        if !all_names.contains(&filter.to_string()) {
+            error!(
+                "Monitor '{}' not found. Available: {}",
+                filter,
+                all_names.join(", ")
+            );
+            std::process::exit(1);
+        }
+        vec![filter.to_string()]
+    } else {
+        all_names
+    };
+
+    // Start screensaver on target outputs
+    for name in &targets {
         state.queue_command(RendererCommand::Start {
             monitor: name.clone(),
             screensaver: screensaver_name.to_string(),
         });
     }
-
-    // Process the queued start commands
     state.process_commands();
 
-    info!("Preview: {} on {} output(s). Press Ctrl+C to exit.", screensaver_name, names.len());
+    let target_desc = targets.join(", ");
+    match duration {
+        Some(secs) => info!(
+            "Preview: {} on [{}] for {}s",
+            screensaver_name, target_desc, secs
+        ),
+        None => info!(
+            "Preview: {} on [{}]. Press Ctrl+C to exit.",
+            screensaver_name, target_desc
+        ),
+    }
+
+    let start = std::time::Instant::now();
 
     loop {
+        if !running.load(Ordering::SeqCst) {
+            info!("Signal received, shutting down");
+            break;
+        }
+
+        if let Some(secs) = duration
+            && start.elapsed() >= std::time::Duration::from_secs(secs)
+        {
+            info!("Duration elapsed ({}s), shutting down", secs);
+            break;
+        }
+
         if let Err(e) = event_loop.dispatch(std::time::Duration::from_millis(16), &mut state) {
             error!("Event loop error: {}", e);
             break;
         }
+
         if state.exit {
             break;
         }

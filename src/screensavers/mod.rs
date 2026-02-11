@@ -10,6 +10,18 @@ pub mod starfield;
 
 use std::collections::HashMap;
 
+/// All built-in screensaver names
+pub const AVAILABLE: &[(&str, &str)] = &[
+    ("blank", "Black screen (DPMS-like, minimal power)"),
+    ("matrix", "Matrix digital rain effect"),
+    ("starfield", "Classic starfield fly-through"),
+];
+
+/// Check if a screensaver name is valid
+pub fn is_valid(name: &str) -> bool {
+    AVAILABLE.iter().any(|(n, _)| *n == name)
+}
+
 /// Trait that all screensaver modules must implement
 #[allow(dead_code)]
 pub trait Screensaver {
@@ -34,9 +46,9 @@ pub trait Screensaver {
 pub fn list_available() {
     println!("Available screensavers:");
     println!();
-    println!("  {:<16} Black screen (DPMS-like, minimal power)", "blank");
-    println!("  {:<16} Matrix digital rain effect", "matrix");
-    println!("  {:<16} Classic starfield fly-through", "starfield");
+    for (name, desc) in AVAILABLE {
+        println!("  {:<16} {}", name, desc);
+    }
     println!();
     println!("Set the screensaver in ~/.config/hypr/hyprfresh.toml:");
     println!("  [screensaver]");
