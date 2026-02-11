@@ -130,14 +130,14 @@ hyprfresh --config /path/to/config.toml
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                   HyprFresh                      │
-│                                                  │
-│  ┌──────────┐  ┌───────────┐  ┌──────────────┐ │
-│  │   IPC    │  │   Idle    │  │   Renderer   │ │
-│  │          │  │  Tracker  │  │              │ │
-│  │ cursor   │──│ per-mon   │──│ layer-shell  │ │
-│  │ monitors │  │ timers    │  │ wgpu/shaders │ │
-│  └──────────┘  └───────────┘  └──────────────┘ │
+│                   HyprFresh                     │
+│                                                 │
+│  ┌──────────┐  ┌───────────┐  ┌──────────────┐  │
+│  │   IPC    │  │   Idle    │  │   Renderer   │  │
+│  │          │  │  Tracker  │  │              │  │
+│  │ cursor   │──│ per-mon   │──│ layer-shell  │  │
+│  │ monitors │  │ timers    │  │ wgpu/shaders │  │
+│  └──────────┘  └───────────┘  └──────────────┘  │
 │       │                             │           │
 │  Hyprland IPC              Wayland Protocol     │
 │  (UNIX socket)             (wlr-layer-shell)    │
