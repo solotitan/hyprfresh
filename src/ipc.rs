@@ -11,6 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 /// Information about a connected monitor
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MonitorInfo {
     pub id: i32,
@@ -120,6 +121,7 @@ fn event_socket_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
 }
 
 /// Hyprland events we care about
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum HyprEvent {
     /// A monitor was connected
@@ -142,13 +144,13 @@ fn parse_event(line: &str) -> HyprEvent {
             "monitoradded" => HyprEvent::MonitorAdded(data.to_string()),
             // monitoraddedv2 format: "id,name,description"
             "monitoraddedv2" => {
-                let name = data.splitn(3, ',').nth(1).unwrap_or(data).to_string();
+                let name = data.split(',').nth(1).unwrap_or(data).to_string();
                 HyprEvent::MonitorAdded(name)
             }
             "monitorremoved" => HyprEvent::MonitorRemoved(data.to_string()),
             // monitorremovedv2 format: "id,name"
             "monitorremovedv2" => {
-                let name = data.splitn(3, ',').nth(1).unwrap_or(data).to_string();
+                let name = data.split(',').nth(1).unwrap_or(data).to_string();
                 HyprEvent::MonitorRemoved(name)
             }
             "focusedmon" => {

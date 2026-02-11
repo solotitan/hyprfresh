@@ -11,6 +11,7 @@ pub mod starfield;
 use std::collections::HashMap;
 
 /// Trait that all screensaver modules must implement
+#[allow(dead_code)]
 pub trait Screensaver {
     /// Human-readable name
     fn name(&self) -> &str;
@@ -33,9 +34,9 @@ pub trait Screensaver {
 pub fn list_available() {
     println!("Available screensavers:");
     println!();
-    println!("  {:<16} {}", "blank", "Black screen (DPMS-like, minimal power)");
-    println!("  {:<16} {}", "matrix", "Matrix digital rain effect");
-    println!("  {:<16} {}", "starfield", "Classic starfield fly-through");
+    println!("  {:<16} Black screen (DPMS-like, minimal power)", "blank");
+    println!("  {:<16} Matrix digital rain effect", "matrix");
+    println!("  {:<16} Classic starfield fly-through", "starfield");
     println!();
     println!("Set the screensaver in ~/.config/hypr/hyprfresh.toml:");
     println!("  [screensaver]");
@@ -43,6 +44,7 @@ pub fn list_available() {
 }
 
 /// Get a screensaver instance by name
+#[allow(dead_code)]
 pub fn get(name: &str) -> Option<Box<dyn Screensaver>> {
     match name {
         "blank" => Some(Box::new(blank::Blank::new())),

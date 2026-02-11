@@ -47,6 +47,7 @@ use wayland_client::{
 // ---------------------------------------------------------------------------
 
 /// Commands sent from the idle tracker to the renderer
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum RendererCommand {
     /// Start a screensaver on a specific monitor
@@ -642,12 +643,12 @@ impl WaylandState {
 
     /// Request the next frame callback for a monitor
     fn request_frame(&self, output_name: &str, qh: &QueueHandle<Self>) {
-        if let Some(surface) = self.surfaces.get(output_name) {
-            if surface.configured {
-                let wl_surf = surface.layer.wl_surface();
-                wl_surf.frame(qh, wl_surf.clone());
-                surface.layer.commit();
-            }
+        if let Some(surface) = self.surfaces.get(output_name)
+            && surface.configured
+        {
+            let wl_surf = surface.layer.wl_surface();
+            wl_surf.frame(qh, wl_surf.clone());
+            surface.layer.commit();
         }
     }
 }

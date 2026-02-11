@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 
 /// Top-level configuration for HyprFresh
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Clone)]
 pub struct Config {
     #[serde(default)]
     pub general: GeneralConfig,
@@ -16,6 +16,7 @@ pub struct Config {
 }
 
 /// General daemon settings
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct GeneralConfig {
     /// Per-monitor idle timeout in seconds (default: 300 = 5 minutes)
@@ -50,6 +51,7 @@ pub struct MonitorConfig {
 }
 
 /// Screensaver rendering settings
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct ScreensaverConfig {
     /// Which screensaver to use (default: "matrix")
@@ -90,16 +92,6 @@ fn default_opacity() -> f32 {
 }
 fn default_true() -> bool {
     true
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            general: GeneralConfig::default(),
-            monitors: HashMap::new(),
-            screensaver: ScreensaverConfig::default(),
-        }
-    }
 }
 
 impl Default for GeneralConfig {

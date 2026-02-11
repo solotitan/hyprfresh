@@ -2,6 +2,7 @@ use super::Screensaver;
 use std::collections::HashMap;
 
 /// Classic starfield fly-through screensaver
+#[allow(dead_code)]
 pub struct Starfield {
     time: f32,
     speed: f32,

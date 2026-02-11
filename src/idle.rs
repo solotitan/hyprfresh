@@ -100,20 +100,20 @@ pub async fn run_idle_loop(
         });
 
         // Update the active monitor's last_active timestamp
-        if let Some(ref name) = current_monitor {
-            if let Some(state) = monitor_states.get_mut(name) {
-                state.last_active = now;
+        if let Some(ref name) = current_monitor
+            && let Some(state) = monitor_states.get_mut(name)
+        {
+            state.last_active = now;
 
-                // If screensaver was active on this monitor, stop it
-                if state.screensaver_active {
-                    info!("Activity detected on {}, stopping screensaver", name);
-                    state.screensaver_active = false;
-                    let cmd = RendererCommand::Stop {
-                        monitor: name.clone(),
-                    };
-                    if let Err(e) = tx.send(cmd).await {
-                        warn!("Failed to send stop command: {}", e);
-                    }
+            // If screensaver was active on this monitor, stop it
+            if state.screensaver_active {
+                info!("Activity detected on {}, stopping screensaver", name);
+                state.screensaver_active = false;
+                let cmd = RendererCommand::Stop {
+                    monitor: name.clone(),
+                };
+                if let Err(e) = tx.send(cmd).await {
+                    warn!("Failed to send stop command: {}", e);
                 }
             }
         }
@@ -129,10 +129,10 @@ pub async fn run_idle_loop(
         // Check each monitor for idle timeout
         for (name, state) in monitor_states.iter_mut() {
             // Skip if monitor-specific config disables it
-            if let Some(mon_cfg) = config.monitors.get(name) {
-                if mon_cfg.disabled {
-                    continue;
-                }
+            if let Some(mon_cfg) = config.monitors.get(name)
+                && mon_cfg.disabled
+            {
+                continue;
             }
 
             // Use monitor-specific timeout or global default
