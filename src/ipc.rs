@@ -119,15 +119,185 @@ fn event_socket_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     )))
 }
 
-/// Listen for Hyprland events (monitor connect/disconnect, workspace changes)
-/// Calls the provided callback for each event line
-pub async fn listen_events<F>(mut callback: F) -> Result<(), Box<dyn std::error::Error>>
-where
-    F: FnMut(&str),
-{
+/// Hyprland events we care about
+#[derive(Debug, Clone)]
+pub enum HyprEvent {
+    /// A monitor was connected
+    MonitorAdded(String),
+    /// A monitor was disconnected
+    MonitorRemoved(String),
+    /// Active monitor changed (cursor moved between outputs)
+    FocusedMonitor(String),
+    /// Workspace changed on a monitor
+    Workspace(String),
+    /// Unknown/unhandled event
+    Other(String),
+}
+
+/// Parse a raw Hyprland event line into a typed event
+fn parse_event(line: &str) -> HyprEvent {
+    // Hyprland event format: "EVENT>>DATA"
+    if let Some((event, data)) = line.split_once(">>") {
+        match event {
+            "monitoradded" | "monitoraddedv2" => HyprEvent::MonitorAdded(data.to_string()),
+            "monitorremoved" | "monitorremovedv2" => HyprEvent::MonitorRemoved(data.to_string()),
+            "focusedmon" => {
+                // focusedmon>>MONNAME,WORKSPACE
+                let monitor = data.split(',').next().unwrap_or(data).to_string();
+                HyprEvent::FocusedMonitor(monitor)
+            }
+            "workspace" | "workspacev2" => HyprEvent::Workspace(data.to_string()),
+            _ => HyprEvent::Other(line.to_string()),
+        }
+    } else {
+        HyprEvent::Other(line.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_monitor_added() {
+        match parse_event("monitoradded>>DP-1") {
+            HyprEvent::MonitorAdded(name) => assert_eq!(name, "DP-1"),
+            other => panic!("Expected MonitorAdded, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_monitor_added_v2() {
+        match parse_event("monitoraddedv2>>1,DP-2,some desc") {
+            HyprEvent::MonitorAdded(data) => assert_eq!(data, "1,DP-2,some desc"),
+            other => panic!("Expected MonitorAdded, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_monitor_removed() {
+        match parse_event("monitorremoved>>HDMI-A-1") {
+            HyprEvent::MonitorRemoved(name) => assert_eq!(name, "HDMI-A-1"),
+            other => panic!("Expected MonitorRemoved, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_focused_mon() {
+        match parse_event("focusedmon>>DP-1,2") {
+            HyprEvent::FocusedMonitor(name) => assert_eq!(name, "DP-1"),
+            other => panic!("Expected FocusedMonitor, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_workspace() {
+        match parse_event("workspace>>3") {
+            HyprEvent::Workspace(data) => assert_eq!(data, "3"),
+            other => panic!("Expected Workspace, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_unknown_event() {
+        match parse_event("openwindow>>some data") {
+            HyprEvent::Other(raw) => assert_eq!(raw, "openwindow>>some data"),
+            other => panic!("Expected Other, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_malformed_line() {
+        match parse_event("garbage with no separator") {
+            HyprEvent::Other(raw) => assert_eq!(raw, "garbage with no separator"),
+            other => panic!("Expected Other, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cursor_on_monitor_hit() {
+        let monitors = vec![
+            MonitorInfo {
+                id: 0,
+                name: "DP-1".to_string(),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                active_workspace_id: 1,
+                focused: true,
+            },
+            MonitorInfo {
+                id: 1,
+                name: "DP-2".to_string(),
+                x: 1920,
+                y: 0,
+                width: 2560,
+                height: 1440,
+                active_workspace_id: 2,
+                focused: false,
+            },
+        ];
+
+        let cursor = CursorPos { x: 100, y: 500 };
+        assert_eq!(cursor_on_monitor(&cursor, &monitors), Some("DP-1".to_string()));
+
+        let cursor = CursorPos { x: 2000, y: 700 };
+        assert_eq!(cursor_on_monitor(&cursor, &monitors), Some("DP-2".to_string()));
+    }
+
+    #[test]
+    fn cursor_on_monitor_miss() {
+        let monitors = vec![MonitorInfo {
+            id: 0,
+            name: "DP-1".to_string(),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            active_workspace_id: 1,
+            focused: true,
+        }];
+
+        let cursor = CursorPos { x: 5000, y: 5000 };
+        assert_eq!(cursor_on_monitor(&cursor, &monitors), None);
+    }
+
+    #[test]
+    fn cursor_on_monitor_boundary() {
+        let monitors = vec![MonitorInfo {
+            id: 0,
+            name: "DP-1".to_string(),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            active_workspace_id: 1,
+            focused: true,
+        }];
+
+        // Exactly at origin -- should be on monitor
+        let cursor = CursorPos { x: 0, y: 0 };
+        assert_eq!(cursor_on_monitor(&cursor, &monitors), Some("DP-1".to_string()));
+
+        // At max edge -- should NOT be on monitor (exclusive upper bound)
+        let cursor = CursorPos { x: 1920, y: 0 };
+        assert_eq!(cursor_on_monitor(&cursor, &monitors), None);
+    }
+}
+
+/// Listen for Hyprland events and send parsed events to the channel.
+///
+/// Connects to Hyprland's socket2 (event socket) and streams events
+/// until the socket closes or the receiver is dropped.
+pub async fn listen_events(
+    tx: tokio::sync::mpsc::Sender<HyprEvent>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let path = event_socket_path()?;
     let mut stream = UnixStream::connect(&path).await?;
     let mut buf = vec![0u8; 4096];
+
+    debug!("Connected to Hyprland event socket at {:?}", path);
 
     loop {
         let n = stream.read(&mut buf).await?;
@@ -137,7 +307,15 @@ where
         }
         let data = String::from_utf8_lossy(&buf[..n]);
         for line in data.lines() {
-            callback(line);
+            if line.is_empty() {
+                continue;
+            }
+            let event = parse_event(line);
+            debug!("Hyprland event: {:?}", event);
+            if tx.send(event).await.is_err() {
+                // Receiver dropped, we're shutting down
+                return Ok(());
+            }
         }
     }
 

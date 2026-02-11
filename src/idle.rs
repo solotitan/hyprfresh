@@ -4,12 +4,17 @@
 //! Unlike session-wide idle (ext-idle-notify-v1), this provides per-monitor
 //! granularity -- a monitor is considered idle if the cursor hasn't been
 //! on it for the configured timeout period.
+//!
+//! Sends [`RendererCommand`]s to the renderer via an mpsc channel when
+//! monitors transition between idle and active states.
 
 use crate::config::Config;
-use crate::ipc;
+use crate::ipc::{self, HyprEvent};
+use crate::renderer::RendererCommand;
 use log::{debug, info, warn};
 use std::collections::HashMap;
 use std::time::Instant;
+use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
 
 /// Per-monitor idle state
@@ -22,7 +27,13 @@ struct MonitorIdleState {
 }
 
 /// Run the main idle detection daemon loop
-pub async fn run_daemon(config: Config) -> Result<(), Box<dyn std::error::Error>> {
+///
+/// Polls Hyprland IPC for cursor position and monitor layout, tracks
+/// per-monitor idle time, and sends start/stop commands to the renderer.
+pub async fn run_idle_loop(
+    config: Config,
+    tx: mpsc::Sender<RendererCommand>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let poll_interval = Duration::from_millis(config.general.poll_interval);
     let idle_timeout = Duration::from_secs(config.general.idle_timeout);
 
@@ -30,7 +41,7 @@ pub async fn run_daemon(config: Config) -> Result<(), Box<dyn std::error::Error>
     let mut last_cursor_monitor: Option<String> = None;
 
     info!(
-        "Idle daemon started: poll={}ms, timeout={}s",
+        "Idle loop started: poll={}ms, timeout={}s",
         config.general.poll_interval, config.general.idle_timeout
     );
 
@@ -75,8 +86,12 @@ pub async fn run_daemon(config: Config) -> Result<(), Box<dyn std::error::Error>
         monitor_states.retain(|name, state| {
             if !connected_names.contains(name) {
                 if state.screensaver_active {
-                    info!("Monitor {} disconnected, stopping screensaver", name);
-                    // TODO: Stop screensaver on this monitor
+                    info!("Monitor {} disconnected, sending removal command", name);
+                    let cmd = RendererCommand::MonitorRemoved {
+                        monitor: name.clone(),
+                    };
+                    // Best-effort send; if renderer is gone we're shutting down anyway
+                    let _ = tx.try_send(cmd);
                 }
                 false
             } else {
@@ -93,7 +108,12 @@ pub async fn run_daemon(config: Config) -> Result<(), Box<dyn std::error::Error>
                 if state.screensaver_active {
                     info!("Activity detected on {}, stopping screensaver", name);
                     state.screensaver_active = false;
-                    // TODO: renderer::stop_screensaver(name)
+                    let cmd = RendererCommand::Stop {
+                        monitor: name.clone(),
+                    };
+                    if let Err(e) = tx.send(cmd).await {
+                        warn!("Failed to send stop command: {}", e);
+                    }
                 }
             }
         }
@@ -135,14 +155,150 @@ pub async fn run_daemon(config: Config) -> Result<(), Box<dyn std::error::Error>
                 state.screensaver_active = true;
 
                 // Determine which screensaver to use
-                let _screensaver_name = config
+                let screensaver_name = config
                     .monitors
                     .get(name)
                     .and_then(|m| m.screensaver.clone())
                     .unwrap_or_else(|| config.screensaver.name.clone());
 
-                // TODO: renderer::start_screensaver(name, &screensaver_name, &config.screensaver)
+                let cmd = RendererCommand::Start {
+                    monitor: name.clone(),
+                    screensaver: screensaver_name,
+                };
+                if let Err(e) = tx.send(cmd).await {
+                    warn!("Failed to send start command: {}", e);
+                }
             }
         }
+    }
+}
+
+/// Bridge Hyprland events into renderer commands.
+///
+/// Listens for events from the Hyprland event socket and translates
+/// relevant ones (monitor hotplug, focus changes) into renderer commands.
+/// Runs as a separate task alongside the idle poll loop.
+pub async fn run_event_bridge(
+    mut event_rx: mpsc::Receiver<HyprEvent>,
+    render_tx: mpsc::Sender<RendererCommand>,
+) {
+    info!("Event bridge started");
+
+    while let Some(event) = event_rx.recv().await {
+        match event {
+            HyprEvent::MonitorRemoved(name) => {
+                info!("Monitor removed event: {}", name);
+                let cmd = RendererCommand::MonitorRemoved { monitor: name };
+                if render_tx.send(cmd).await.is_err() {
+                    break;
+                }
+            }
+            HyprEvent::MonitorAdded(name) => {
+                info!("Monitor added event: {}", name);
+                // No action needed -- the idle poll loop will pick up the
+                // new monitor on its next iteration via get_monitors()
+            }
+            HyprEvent::FocusedMonitor(name) => {
+                debug!("Focus moved to monitor: {}", name);
+                // Activity on this monitor -- stop its screensaver if running.
+                // The idle poll loop handles the authoritative state, but this
+                // gives us faster wake response for focus changes.
+                let cmd = RendererCommand::Stop { monitor: name };
+                if render_tx.send(cmd).await.is_err() {
+                    break;
+                }
+            }
+            HyprEvent::Workspace(_) | HyprEvent::Other(_) => {
+                // Workspace changes are informational; the idle loop
+                // tracks cursor position which is the real activity signal.
+            }
+        }
+    }
+
+    info!("Event bridge stopped");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify the event bridge translates MonitorRemoved into a RendererCommand
+    #[tokio::test]
+    async fn event_bridge_monitor_removed() {
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (render_tx, mut render_rx) = mpsc::channel(8);
+
+        let bridge = tokio::spawn(async move {
+            run_event_bridge(event_rx, render_tx).await;
+        });
+
+        event_tx
+            .send(HyprEvent::MonitorRemoved("DP-1".to_string()))
+            .await
+            .unwrap();
+        drop(event_tx); // close channel so bridge exits
+
+        let cmd = render_rx.recv().await.unwrap();
+        match cmd {
+            RendererCommand::MonitorRemoved { monitor } => assert_eq!(monitor, "DP-1"),
+            other => panic!("Expected MonitorRemoved, got {:?}", other),
+        }
+
+        bridge.await.unwrap();
+    }
+
+    /// Verify the event bridge translates FocusedMonitor into a Stop command
+    #[tokio::test]
+    async fn event_bridge_focus_sends_stop() {
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (render_tx, mut render_rx) = mpsc::channel(8);
+
+        let bridge = tokio::spawn(async move {
+            run_event_bridge(event_rx, render_tx).await;
+        });
+
+        event_tx
+            .send(HyprEvent::FocusedMonitor("HDMI-A-1".to_string()))
+            .await
+            .unwrap();
+        drop(event_tx);
+
+        let cmd = render_rx.recv().await.unwrap();
+        match cmd {
+            RendererCommand::Stop { monitor } => assert_eq!(monitor, "HDMI-A-1"),
+            other => panic!("Expected Stop, got {:?}", other),
+        }
+
+        bridge.await.unwrap();
+    }
+
+    /// Verify workspace and unknown events don't produce renderer commands
+    #[tokio::test]
+    async fn event_bridge_ignores_workspace() {
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (render_tx, mut render_rx) = mpsc::channel(8);
+
+        let bridge = tokio::spawn(async move {
+            run_event_bridge(event_rx, render_tx).await;
+        });
+
+        event_tx
+            .send(HyprEvent::Workspace("3".to_string()))
+            .await
+            .unwrap();
+        event_tx
+            .send(HyprEvent::Other("openwindow>>data".to_string()))
+            .await
+            .unwrap();
+        event_tx
+            .send(HyprEvent::MonitorAdded("DP-2".to_string()))
+            .await
+            .unwrap();
+        drop(event_tx);
+
+        bridge.await.unwrap();
+
+        // None of those events should produce a renderer command
+        assert!(render_rx.try_recv().is_err());
     }
 }
