@@ -15,6 +15,7 @@
 //! - The tokio idle loop sends RendererCommands via calloop::channel
 //! - Frame callbacks drive the animation loop (compositor-synced vsync)
 
+use crate::screensavers;
 use log::{debug, info, warn};
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
@@ -185,15 +186,34 @@ pub struct WaylandState {
 /// Common vertex shader source (shared by all screensavers)
 const COMMON_SHADER: &str = include_str!("../screensavers/shaders/common.wgsl");
 
-/// Get the fragment shader source for a named screensaver
-fn get_fragment_shader(name: &str) -> &'static str {
+/// Get the fragment shader source for a named screensaver.
+/// Checks custom shader directory first, then falls back to built-in.
+fn get_fragment_shader(name: &str) -> String {
+    // Try custom shader first
+    if let Some(dir) = screensavers::custom_shader_dir() {
+        let path = dir.join(format!("{}.wgsl", name));
+        if path.is_file() {
+            match screensavers::load_custom_shader(&path) {
+                Ok(source) => {
+                    info!("Loaded custom shader '{}' from {}", name, path.display());
+                    return source;
+                }
+                Err(e) => {
+                    warn!("{}", e);
+                    warn!("Falling back to built-in for '{}'", name);
+                }
+            }
+        }
+    }
+
+    // Built-in shaders
     match name {
-        "blank" => include_str!("../screensavers/shaders/blank.wgsl"),
-        "matrix" => include_str!("../screensavers/shaders/matrix.wgsl"),
-        "starfield" => include_str!("../screensavers/shaders/starfield.wgsl"),
+        "blank" => include_str!("../screensavers/shaders/blank.wgsl").to_string(),
+        "matrix" => include_str!("../screensavers/shaders/matrix.wgsl").to_string(),
+        "starfield" => include_str!("../screensavers/shaders/starfield.wgsl").to_string(),
         _ => {
             warn!("Unknown screensaver '{}', falling back to blank", name);
-            include_str!("../screensavers/shaders/blank.wgsl")
+            include_str!("../screensavers/shaders/blank.wgsl").to_string()
         }
     }
 }
