@@ -16,7 +16,6 @@ pub struct Config {
 }
 
 /// General daemon settings
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct GeneralConfig {
     /// Per-monitor idle timeout in seconds (default: 300 = 5 minutes)
@@ -122,5 +121,45 @@ impl Config {
         let content = fs::read_to_string(path)?;
         let config: Config = toml::from_str(&content)?;
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_idle_defaults() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.general.session_idle);
+        assert_eq!(config.general.session_idle_timeout, 600);
+    }
+
+    #[test]
+    fn session_idle_explicit_config() {
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            session_idle = false
+            session_idle_timeout = 900
+            "#,
+        )
+        .unwrap();
+        assert!(!config.general.session_idle);
+        assert_eq!(config.general.session_idle_timeout, 900);
+    }
+
+    #[test]
+    fn session_idle_enabled_with_custom_timeout() {
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            session_idle = true
+            session_idle_timeout = 120
+            "#,
+        )
+        .unwrap();
+        assert!(config.general.session_idle);
+        assert_eq!(config.general.session_idle_timeout, 120);
     }
 }

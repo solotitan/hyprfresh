@@ -6,7 +6,7 @@ mod screensavers;
 
 use clap::Parser;
 use log::{error, info, warn};
-use renderer::{RendererCommand, WaylandState};
+use renderer::{RendererCommand, SessionIdleConfig, WaylandState};
 use smithay_client_toolkit::reexports::calloop::{self, EventLoop};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -85,8 +85,14 @@ fn main() {
 
 /// Run the main daemon: Wayland renderer on main thread, tokio idle loop on background thread
 fn run_daemon(cfg: config::Config) {
+    let session_idle_config = SessionIdleConfig {
+        enabled: cfg.general.session_idle,
+        timeout_secs: cfg.general.session_idle_timeout,
+        screensaver: cfg.screensaver.name.clone(),
+    };
+
     // Initialize Wayland state and event queue
-    let (mut state, event_queue, conn) = match WaylandState::new() {
+    let (mut state, event_queue, conn) = match WaylandState::new(session_idle_config) {
         Ok(s) => s,
         Err(e) => {
             error!("Failed to initialize Wayland: {}", e);
@@ -217,7 +223,14 @@ fn run_daemon(cfg: config::Config) {
 
 /// Run a screensaver in preview mode (immediate, no idle detection)
 fn run_preview(screensaver_name: &str, monitor_filter: Option<&str>, duration: Option<u64>) {
-    let (mut state, event_queue, conn) = match WaylandState::new() {
+    // Preview mode doesn't use session-wide idle
+    let session_idle_config = SessionIdleConfig {
+        enabled: false,
+        timeout_secs: 0,
+        screensaver: screensaver_name.to_string(),
+    };
+
+    let (mut state, event_queue, conn) = match WaylandState::new(session_idle_config) {
         Ok(s) => s,
         Err(e) => {
             error!("Failed to initialize Wayland: {}", e);

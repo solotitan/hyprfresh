@@ -22,10 +22,11 @@ use raw_window_handle::{
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_layer, delegate_output, delegate_registry,
+    delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_seat,
     output::{OutputHandler, OutputInfo, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
+    seat::{Capability, SeatHandler, SeatState},
     shell::{
         wlr_layer::{
             Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
@@ -39,8 +40,12 @@ use std::ptr::NonNull;
 use std::time::Instant;
 use wayland_client::{
     globals::registry_queue_init,
-    protocol::{wl_output, wl_surface},
-    Connection, Proxy, QueueHandle,
+    protocol::{wl_output, wl_seat, wl_surface},
+    Connection, Dispatch, Proxy, QueueHandle,
+};
+use wayland_protocols::ext::idle_notify::v1::client::{
+    ext_idle_notification_v1::{self, ExtIdleNotificationV1},
+    ext_idle_notifier_v1::{self, ExtIdleNotifierV1},
 };
 
 // ---------------------------------------------------------------------------
@@ -56,6 +61,8 @@ pub enum RendererCommand {
         monitor: String,
         screensaver: String,
     },
+    /// Start screensavers on ALL monitors (session-wide idle)
+    StartAll { screensaver: String },
     /// Stop the screensaver on a specific monitor
     Stop { monitor: String },
     /// Stop all screensavers (e.g. session-wide wake)
@@ -149,6 +156,17 @@ struct MonitorSurface {
 // Wayland state (implements SCTK handler traits)
 // ---------------------------------------------------------------------------
 
+/// Session-wide idle configuration passed to the renderer
+#[derive(Debug, Clone)]
+pub struct SessionIdleConfig {
+    /// Whether session-wide idle is enabled
+    pub enabled: bool,
+    /// Session idle timeout in seconds
+    pub timeout_secs: u64,
+    /// Default screensaver name for session-wide idle
+    pub screensaver: String,
+}
+
 /// Main renderer state, driven by the calloop event loop
 pub struct WaylandState {
     // SCTK state
@@ -156,6 +174,7 @@ pub struct WaylandState {
     output_state: OutputState,
     compositor_state: CompositorState,
     layer_shell: LayerShell,
+    seat_state: SeatState,
 
     // Stored QueueHandle so we can process commands from any calloop callback
     qh: QueueHandle<Self>,
@@ -177,6 +196,11 @@ pub struct WaylandState {
 
     // Pending commands from the idle tracker (processed in the event loop)
     pending_commands: Vec<RendererCommand>,
+
+    // Session-wide idle (ext-idle-notify-v1)
+    idle_notifier: Option<ExtIdleNotifierV1>,
+    idle_notification: Option<ExtIdleNotificationV1>,
+    session_idle_config: SessionIdleConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +328,9 @@ impl WaylandState {
     /// Initialize the Wayland connection and GPU context.
     ///
     /// Returns the state, the event queue, and the connection for the calloop event loop.
-    pub fn new() -> Result<
+    pub fn new(
+        session_idle_config: SessionIdleConfig,
+    ) -> Result<
         (Self, wayland_client::EventQueue<Self>, Connection),
         Box<dyn std::error::Error + Send + Sync>,
     > {
@@ -317,7 +343,28 @@ impl WaylandState {
         let layer_shell =
             LayerShell::bind(&globals, &qh).map_err(|e| format!("wlr-layer-shell: {}", e))?;
         let output_state = OutputState::new(&globals, &qh);
+        let seat_state = SeatState::new(&globals, &qh);
         let registry_state = RegistryState::new(&globals);
+
+        // Bind ext-idle-notify-v1 if available and session idle is enabled
+        let idle_notifier: Option<ExtIdleNotifierV1> = if session_idle_config.enabled {
+            match globals.bind::<ExtIdleNotifierV1, Self, ()>(&qh, 1..=1, ()) {
+                Ok(notifier) => {
+                    info!("ext-idle-notify-v1 bound successfully");
+                    Some(notifier)
+                }
+                Err(e) => {
+                    warn!(
+                        "ext-idle-notify-v1 not available ({}), session-wide idle disabled",
+                        e
+                    );
+                    None
+                }
+            }
+        } else {
+            info!("Session-wide idle disabled by config");
+            None
+        };
 
         let gpu = GpuContext::new(&conn)?;
 
@@ -329,6 +376,7 @@ impl WaylandState {
                 output_state,
                 compositor_state,
                 layer_shell,
+                seat_state,
                 qh: qh_clone,
                 gpu,
                 surfaces: HashMap::new(),
@@ -336,6 +384,9 @@ impl WaylandState {
                 conn,
                 exit: false,
                 pending_commands: Vec::new(),
+                idle_notifier,
+                idle_notification: None,
+                session_idle_config,
             },
             event_queue,
             conn_clone,
@@ -368,6 +419,9 @@ impl WaylandState {
                 } => {
                     let qh = self.qh.clone();
                     self.start_screensaver(&monitor, &screensaver, &qh);
+                }
+                RendererCommand::StartAll { screensaver } => {
+                    self.start_all(&screensaver);
                 }
                 RendererCommand::Stop { monitor } => {
                     self.stop_screensaver(&monitor);
@@ -595,6 +649,15 @@ impl WaylandState {
         let names: Vec<String> = self.surfaces.keys().cloned().collect();
         for name in names {
             self.stop_screensaver(&name);
+        }
+    }
+
+    /// Start screensavers on ALL monitors (session-wide idle)
+    fn start_all(&mut self, screensaver_name: &str) {
+        let names: Vec<String> = self.output_map.values().cloned().collect();
+        let qh = self.qh.clone();
+        for name in names {
+            self.start_screensaver(&name, screensaver_name, &qh);
         }
     }
 
@@ -880,6 +943,101 @@ impl LayerShellHandler for WaylandState {
     }
 }
 
+impl SeatHandler for WaylandState {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.seat_state
+    }
+
+    fn new_seat(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+    ) {
+        // Create idle notification when we get a seat and have the notifier
+        if self.idle_notification.is_none()
+            && let Some(ref notifier) = self.idle_notifier
+        {
+            let timeout_ms = (self.session_idle_config.timeout_secs * 1000) as u32;
+            info!(
+                "Creating ext-idle-notify-v1 notification (timeout: {}s)",
+                self.session_idle_config.timeout_secs
+            );
+            let notification = notifier.get_idle_notification(timeout_ms, &seat, qh, ());
+            self.idle_notification = Some(notification);
+        }
+    }
+
+    fn new_capability(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _seat: wl_seat::WlSeat,
+        _capability: Capability,
+    ) {
+    }
+
+    fn remove_capability(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _seat: wl_seat::WlSeat,
+        _capability: Capability,
+    ) {
+    }
+
+    fn remove_seat(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _seat: wl_seat::WlSeat,
+    ) {
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ext-idle-notify-v1 Dispatch implementations
+// ---------------------------------------------------------------------------
+
+impl Dispatch<ExtIdleNotifierV1, ()> for WaylandState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ExtIdleNotifierV1,
+        _event: ext_idle_notifier_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // ExtIdleNotifierV1 has no events (empty enum)
+    }
+}
+
+impl Dispatch<ExtIdleNotificationV1, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _proxy: &ExtIdleNotificationV1,
+        event: ext_idle_notification_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_idle_notification_v1::Event::Idled => {
+                info!("Session-wide idle detected, starting screensavers on all monitors");
+                let screensaver = state.session_idle_config.screensaver.clone();
+                state.queue_command(RendererCommand::StartAll { screensaver });
+                state.process_commands();
+            }
+            ext_idle_notification_v1::Event::Resumed => {
+                info!("Session-wide activity resumed, stopping all screensavers");
+                state.queue_command(RendererCommand::StopAll);
+                state.process_commands();
+            }
+            _ => {} // non_exhaustive
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SCTK delegate macros
 // ---------------------------------------------------------------------------
@@ -887,13 +1045,14 @@ impl LayerShellHandler for WaylandState {
 delegate_compositor!(WaylandState);
 delegate_output!(WaylandState);
 delegate_layer!(WaylandState);
+delegate_seat!(WaylandState);
 delegate_registry!(WaylandState);
 
 impl ProvidesRegistryState for WaylandState {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
-    registry_handlers![OutputState];
+    registry_handlers![OutputState, SeatState];
 }
 
 // ---------------------------------------------------------------------------
@@ -966,6 +1125,9 @@ mod tests {
                 monitor: "DP-1".into(),
                 screensaver: "matrix".into(),
             },
+            RendererCommand::StartAll {
+                screensaver: "matrix".into(),
+            },
             RendererCommand::Stop {
                 monitor: "DP-1".into(),
             },
@@ -975,6 +1137,42 @@ mod tests {
             },
             RendererCommand::Shutdown,
         ];
-        assert_eq!(cmds.len(), 5);
+        assert_eq!(cmds.len(), 6);
+    }
+
+    #[test]
+    fn session_idle_config_defaults() {
+        let config = SessionIdleConfig {
+            enabled: true,
+            timeout_secs: 600,
+            screensaver: "matrix".to_string(),
+        };
+        assert!(config.enabled);
+        assert_eq!(config.timeout_secs, 600);
+        assert_eq!(config.screensaver, "matrix");
+    }
+
+    #[test]
+    fn session_idle_config_disabled() {
+        let config = SessionIdleConfig {
+            enabled: false,
+            timeout_secs: 0,
+            screensaver: "blank".to_string(),
+        };
+        assert!(!config.enabled);
+    }
+
+    #[test]
+    fn start_all_command_clone() {
+        let cmd = RendererCommand::StartAll {
+            screensaver: "starfield".into(),
+        };
+        let cloned = cmd.clone();
+        match cloned {
+            RendererCommand::StartAll { screensaver } => {
+                assert_eq!(screensaver, "starfield");
+            }
+            _ => panic!("Expected StartAll"),
+        }
     }
 }
