@@ -1,0 +1,17 @@
+[Unit]
+Description=HyprFresh - Wayland screensaver daemon for Hyprland
+Documentation=https://github.com/solotitan/hyprfresh
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/hyprfresh
+Restart=on-failure
+RestartSec=5
+
+# Environment
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,49 @@
+[package]
+name = "hyprfresh"
+version = "0.1.0"
+edition = "2024"
+authors = ["solotitan"]
+description = "A native Wayland screensaver daemon for Hyprland with per-monitor idle detection"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/solotitan/hyprfresh"
+keywords = ["hyprland", "wayland", "screensaver", "idle"]
+categories = ["gui"]
+
+[dependencies]
+# Wayland client + layer shell protocol
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+smithay-client-toolkit = { version = "0.19", features = ["calloop"] }
+
+# Event loop
+calloop = "0.14"
+
+# Rendering (wgpu for GPU-accelerated screensavers)
+wgpu = "24"
+
+# Config parsing
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Async runtime (for Hyprland IPC event listener)
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
+
+# Math for screensaver animations
+glam = "0.29"
+
+# Random (for screensaver effects)
+rand = "0.9"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

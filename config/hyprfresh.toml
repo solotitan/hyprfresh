@@ -1,0 +1,45 @@
+# HyprFresh Configuration
+# Place this file at: ~/.config/hypr/hyprfresh.toml
+
+[general]
+# Per-monitor idle timeout in seconds (default: 300 = 5 minutes)
+idle_timeout = 300
+
+# How often to poll cursor position in milliseconds (default: 1000)
+poll_interval = 1000
+
+# Also use session-wide idle detection via ext-idle-notify-v1
+session_idle = true
+
+# Session-wide idle timeout in seconds (triggers on ALL monitors)
+session_idle_timeout = 600
+
+[screensaver]
+# Which screensaver to use: "blank", "matrix", "starfield"
+name = "matrix"
+
+# Target FPS for animation (default: 30)
+fps = 30
+
+# Overlay opacity (0.0 = transparent, 1.0 = opaque)
+opacity = 1.0
+
+# Screensaver-specific options
+[screensaver.options]
+# Matrix options:
+#   speed = 1.0        # Animation speed multiplier
+#   density = 1.0      # Column density
+#   color = [0.0, 1.0, 0.0]  # RGB color (green by default)
+#
+# Starfield options:
+#   speed = 1.0        # Fly-through speed
+#   stars = 200        # Number of stars
+
+# Per-monitor overrides (use monitor name from `hyprctl monitors`)
+# [monitors.DP-1]
+# idle_timeout = 120           # Different timeout for this monitor
+# screensaver = "starfield"    # Different screensaver
+# disabled = false
+
+# [monitors.HDMI-A-1]
+# disabled = true              # No screensaver on this monitor
