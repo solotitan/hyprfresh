@@ -10,6 +10,7 @@
 
 pub mod blank;
 pub mod matrix;
+pub mod plasmula;
 pub mod starfield;
 
 use log::debug;
@@ -20,6 +21,7 @@ use std::path::{Path, PathBuf};
 pub const BUILTIN: &[(&str, &str)] = &[
     ("blank", "Black screen (DPMS-like, minimal power)"),
     ("matrix", "Matrix digital rain effect"),
+    ("plasmula", "Dracula-themed plasma waves"),
     ("starfield", "Classic starfield fly-through"),
 ];
 
@@ -159,6 +161,7 @@ pub fn get(name: &str) -> Option<Box<dyn Screensaver>> {
     match name {
         "blank" => Some(Box::new(blank::Blank::new())),
         "matrix" => Some(Box::new(matrix::Matrix::new())),
+        "plasmula" => Some(Box::new(plasmula::Plasmula::new())),
         "starfield" => Some(Box::new(starfield::Starfield::new())),
         _ => None,
     }
@@ -172,6 +175,7 @@ mod tests {
     fn builtin_names_are_valid() {
         assert!(is_valid("blank"));
         assert!(is_valid("matrix"));
+        assert!(is_valid("plasmula"));
         assert!(is_valid("starfield"));
     }
 

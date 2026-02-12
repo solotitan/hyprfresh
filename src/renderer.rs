@@ -239,6 +239,7 @@ fn get_fragment_shader(name: &str) -> String {
     match name {
         "blank" => include_str!("../screensavers/shaders/blank.wgsl").to_string(),
         "matrix" => include_str!("../screensavers/shaders/matrix.wgsl").to_string(),
+        "plasmula" => include_str!("../screensavers/shaders/plasmula.wgsl").to_string(),
         "starfield" => include_str!("../screensavers/shaders/starfield.wgsl").to_string(),
         _ => {
             warn!("Unknown screensaver '{}', falling back to blank", name);
@@ -1093,7 +1094,7 @@ mod tests {
     #[test]
     fn shader_sources_compile() {
         // Verify all shader sources can be loaded and concatenated
-        for name in &["blank", "matrix", "starfield"] {
+        for name in &["blank", "matrix", "plasmula", "starfield"] {
             let source = build_shader_source(name);
             assert!(
                 source.contains("vs_main"),
