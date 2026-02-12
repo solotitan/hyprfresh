@@ -129,20 +129,19 @@ hyprfresh --config /path/to/config.toml
 
 Matrix digital rain -- green glyphs cascading down the screen.
 
-<!-- Replace the src URL after uploading your recording to a GitHub issue/PR -->
-<video src="https://github.com/user-attachments/assets/REPLACE_MATRIX" width="800" autoplay loop muted playsinline></video>
+![Matrix](assets/matrix.gif)
 
 ### Plasmula
 
 Dark plasma waves -- electric purple (`#6000FF`), neon green (`#00FF6C`), deep teal, warm amber.
 
-<video src="https://github.com/user-attachments/assets/3ada3559-a5ef-45c9-8c10-b32dfcc2eaef" width="800" autoplay loop muted playsinline></video>
+![Plasmula](assets/plasmula.gif)
 
 ### Starfield
 
 Classic starfield fly-through -- stars streaming past the camera.
 
-<video src="https://github.com/user-attachments/assets/REPLACE_STARFIELD" width="800" autoplay loop muted playsinline></video>
+![Starfield](assets/starfield.gif)
 
 ### Blank
 
