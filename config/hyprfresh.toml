@@ -11,8 +11,10 @@ poll_interval = 500
 # Also use session-wide idle detection via ext-idle-notify-v1
 session_idle = true
 
-# Session-wide idle timeout in seconds (triggers on ALL monitors)
-session_idle_timeout = 600
+# Session-wide idle timeout in seconds (covers the active monitor).
+# Defaults to idle_timeout if not set, so all monitors go idle together.
+# Only set this if you want the active monitor to have a different timeout.
+# session_idle_timeout = 600
 
 [screensaver]
 # Which screensaver to use: "blank", "matrix", "starfield"
