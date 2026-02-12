@@ -136,7 +136,7 @@ Matrix digital rain -- green glyphs cascading down the screen.
 
 Dark plasma waves -- electric purple (`#6000FF`), neon green (`#00FF6C`), deep teal, warm amber.
 
-<video src="https://github.com/user-attachments/assets/REPLACE_PLASMULA" width="800" autoplay loop muted playsinline></video>
+<video src="https://github.com/user-attachments/assets/3ada3559-a5ef-45c9-8c10-b32dfcc2eaef" width="800" autoplay loop muted playsinline></video>
 
 ### Starfield
 
