@@ -1,20 +1,20 @@
-// Plasmula — Dracula-themed plasma waves
+// Plasmula — Dark plasma waves
 //
-// Layered sine-wave plasma effect using the Dracula color palette.
-// Smooth, hypnotic color blending across the screen.
+// Layered sine-wave plasma effect with a dark palette.
+// Primary: #6000FF (electric purple), #00FF6C (neon green)
+// Accents: deep teal, warm amber — no whites, dark grays only.
 
-// Dracula palette
-const BG:      vec3<f32> = vec3<f32>(0.157, 0.165, 0.212);  // #282a36
-const PURPLE:  vec3<f32> = vec3<f32>(0.741, 0.576, 0.976);  // #bd93f9
-const PINK:    vec3<f32> = vec3<f32>(1.000, 0.475, 0.776);  // #ff79c6
-const CYAN:    vec3<f32> = vec3<f32>(0.545, 0.914, 0.992);  // #8be9fd
-const GREEN:   vec3<f32> = vec3<f32>(0.314, 0.980, 0.482);  // #50fa7b
-const ORANGE:  vec3<f32> = vec3<f32>(1.000, 0.722, 0.424);  // #ffb86c
-const RED:     vec3<f32> = vec3<f32>(1.000, 0.333, 0.333);  // #ff5555
+// Palette
+const BG:      vec3<f32> = vec3<f32>(0.040, 0.040, 0.055);  // #0a0a0e — near-black
+const PURPLE:  vec3<f32> = vec3<f32>(0.376, 0.000, 1.000);  // #6000FF
+const GREEN:   vec3<f32> = vec3<f32>(0.000, 1.000, 0.424);  // #00FF6C
+const TEAL:    vec3<f32> = vec3<f32>(0.000, 0.400, 0.380);  // #006661 — deep teal
+const AMBER:   vec3<f32> = vec3<f32>(0.600, 0.340, 0.000);  // #995700 — warm amber
+const GRAY:    vec3<f32> = vec3<f32>(0.120, 0.120, 0.140);  // #1e1e24 — dark gray
 
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    let t = u.time * 0.4;
+    let t = u.time * 0.35;
     let aspect = u.resolution.x / u.resolution.y;
     let p = vec2<f32>((uv.x - 0.5) * aspect, uv.y - 0.5) * 4.0;
 
@@ -24,37 +24,39 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     // Layer 2: diagonal ripple
     let v2 = sin((p.x + p.y) * 0.9 + t * 0.6) + sin(length(p) * 1.5 - t * 0.8);
 
-    // Layer 3: radial pulse
+    // Layer 3: radial pulse from a drifting center
     let d = length(p - vec2<f32>(sin(t * 0.3) * 1.5, cos(t * 0.4) * 1.5));
     let v3 = sin(d * 2.5 - t * 1.2);
 
     // Layer 4: fine detail
     let v4 = sin(p.x * 3.0 - t * 0.9) * sin(p.y * 2.5 + t * 0.7);
 
-    // Combine layers into a smooth value [-1, 1] range
+    // Combine layers — smooth value in [-1, 1]
     let plasma = (v1 + v2 + v3 + v4) * 0.25;
 
-    // Map plasma value to Dracula colors using smooth blending
-    // Divide the [-1, 1] range into color zones
-    let n = plasma * 0.5 + 0.5; // normalize to [0, 1]
+    // Normalize to [0, 1]
+    let n = plasma * 0.5 + 0.5;
 
-    // 5-color gradient: purple -> pink -> cyan -> green -> orange
+    // 5-zone gradient: purple -> teal -> green -> amber -> purple (loop)
     var color: vec3<f32>;
     if n < 0.2 {
-        color = mix(PURPLE, PINK, n * 5.0);
+        color = mix(PURPLE, TEAL, n * 5.0);
     } else if n < 0.4 {
-        color = mix(PINK, CYAN, (n - 0.2) * 5.0);
+        color = mix(TEAL, GREEN, (n - 0.2) * 5.0);
     } else if n < 0.6 {
-        color = mix(CYAN, GREEN, (n - 0.4) * 5.0);
+        color = mix(GREEN, AMBER, (n - 0.4) * 5.0);
     } else if n < 0.8 {
-        color = mix(GREEN, ORANGE, (n - 0.6) * 5.0);
+        color = mix(AMBER, GRAY, (n - 0.6) * 5.0);
     } else {
-        color = mix(ORANGE, PURPLE, (n - 0.8) * 5.0);
+        color = mix(GRAY, PURPLE, (n - 0.8) * 5.0);
     }
 
-    // Blend toward dark background at edges for depth
-    let vignette = 1.0 - length(uv - 0.5) * 0.6;
-    color = mix(BG, color, vignette * 0.85 + 0.15);
+    // Darken overall — keep colors subdued, never bright white
+    color = color * 0.55;
+
+    // Vignette: fade to near-black at edges
+    let vignette = 1.0 - length(uv - 0.5) * 0.8;
+    color = mix(BG, color, clamp(vignette, 0.0, 1.0));
 
     return vec4<f32>(color, 1.0);
 }
