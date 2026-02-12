@@ -30,10 +30,9 @@ struct MonitorIdleState {
 
 /// Run the main idle detection daemon loop
 ///
-/// Polls Hyprland IPC for cursor position, monitor layout, and focus state.
+/// Polls Hyprland IPC for cursor position and monitor layout.
 /// A monitor is considered active if:
-/// - The cursor is on it AND has moved since last poll, OR
-/// - It is the focused monitor (Hyprland reports keyboard focus here)
+/// - The cursor is on it AND has moved since last poll
 ///
 /// Sends [`RendererCommand`]s to the renderer via an mpsc channel when
 /// monitors transition between idle and active states.
@@ -86,12 +85,6 @@ pub async fn run_idle_loop(
         // Determine which monitor the cursor is on
         let current_monitor = ipc::cursor_on_monitor(&cursor, &monitors);
 
-        // Determine which monitor has keyboard focus (user is typing here)
-        let focused_monitor: Option<String> = monitors
-            .iter()
-            .find(|m| m.focused)
-            .map(|m| m.name.clone());
-
         // Initialize state for any new monitors
         let now = Instant::now();
         for monitor in &monitors {
@@ -129,27 +122,11 @@ pub async fn run_idle_loop(
         }
 
         // --- Activity detection ---
-        // The focused monitor is always considered active (keyboard input).
-        // The cursor's monitor is active if the cursor moved.
-
-        // Reset timer on the focused monitor (keyboard activity)
-        if let Some(ref fname) = focused_monitor
-            && let Some(state) = monitor_states.get_mut(fname)
-        {
-            state.last_active = now;
-
-            // If screensaver is on the focused monitor, stop it immediately
-            if state.screensaver_active {
-                info!("Keyboard focus on {}, stopping screensaver", fname);
-                state.screensaver_active = false;
-                let cmd = RendererCommand::Stop {
-                    monitor: fname.clone(),
-                };
-                if let Err(e) = tx.send(cmd).await {
-                    warn!("Failed to send stop command: {}", e);
-                }
-            }
-        }
+        // A monitor is active only when the cursor moves on it.
+        // Focus changes are handled by the event bridge (FocusedMonitor
+        // events send a Stop command for immediate wake on focus switch).
+        // We do NOT reset the timer on the focused monitor every poll --
+        // that would prevent it from ever going idle.
 
         // Handle cursor movement
         if cursor_moved {
