@@ -19,10 +19,7 @@ HyprFresh fills that gap:
 - **Per-monitor idle detection** -- screensaver activates only on monitors you're not using
 - **Session-wide idle** -- optional fallback using `ext-idle-notify-v1` for all monitors
 - **Per-monitor configuration** -- different screensavers, timeouts, or disable per output
-- **Built-in screensavers:**
-  - `blank` -- Black screen (OLED-friendly, minimal power)
-  - `matrix` -- Matrix digital rain (customizable color, speed, density)
-  - `starfield` -- Classic starfield fly-through
+- **Built-in screensavers** -- see [Screensavers](#screensavers) below
 - **WGSL shader system** -- screensavers are fragment shaders, easy to add new ones
 - **Lightweight** -- single binary, no runtime dependencies beyond Wayland
 
@@ -126,6 +123,17 @@ hyprfresh --list
 hyprfresh --config /path/to/config.toml
 ```
 
+## Screensavers
+
+| Name | Description |
+|------|-------------|
+| `blank` | Black screen -- OLED-friendly, minimal power draw |
+| `matrix` | Matrix digital rain -- green glyphs cascading down the screen |
+| `plasmula` | Dark plasma waves -- electric purple (`#6000FF`), neon green (`#00FF6C`), deep teal, warm amber |
+| `starfield` | Classic starfield fly-through -- stars streaming past the camera |
+
+Custom shaders can be placed in `~/.config/hypr/hyprfresh/shaders/` as `.wgsl` files. The filename (without extension) becomes the screensaver name. Custom shaders override built-ins with the same name.
+
 ## Architecture
 
 ```
@@ -160,7 +168,7 @@ hyprfresh --config /path/to/config.toml
 - [x] Core idle detection daemon
 - [x] wlr-layer-shell surface creation
 - [x] wgpu rendering pipeline
-- [x] Built-in screensavers (blank, matrix, starfield)
+- [x] Built-in screensavers (blank, matrix, plasmula, starfield)
 - [x] Session-wide idle via ext-idle-notify-v1
 - [x] Preview mode (`--preview`, `--monitor`, `--duration`)
 - [x] Custom shader loading from `~/.config/hypr/hyprfresh/shaders/`
