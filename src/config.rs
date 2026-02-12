@@ -30,9 +30,10 @@ pub struct GeneralConfig {
     #[serde(default = "default_true")]
     pub session_idle: bool,
 
-    /// Session-wide idle timeout in seconds (default: 600 = 10 minutes)
-    #[serde(default = "default_session_timeout")]
-    pub session_idle_timeout: u64,
+    /// Session-wide idle timeout in seconds.
+    /// Defaults to `idle_timeout` if not set, so the active monitor gets
+    /// covered at the same time as inactive ones.
+    pub session_idle_timeout: Option<u64>,
 }
 
 /// Per-monitor overrides
@@ -77,9 +78,6 @@ fn default_idle_timeout() -> u64 {
 fn default_poll_interval() -> u64 {
     500
 }
-fn default_session_timeout() -> u64 {
-    600
-}
 fn default_screensaver() -> String {
     "matrix".to_string()
 }
@@ -93,13 +91,20 @@ fn default_true() -> bool {
     true
 }
 
+impl GeneralConfig {
+    /// Effective session idle timeout: explicit value or falls back to idle_timeout
+    pub fn effective_session_idle_timeout(&self) -> u64 {
+        self.session_idle_timeout.unwrap_or(self.idle_timeout)
+    }
+}
+
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
             idle_timeout: default_idle_timeout(),
             poll_interval: default_poll_interval(),
             session_idle: true,
-            session_idle_timeout: default_session_timeout(),
+            session_idle_timeout: None,
         }
     }
 }
@@ -129,10 +134,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn session_idle_defaults() {
+    fn session_idle_defaults_to_idle_timeout() {
         let config: Config = toml::from_str("").unwrap();
         assert!(config.general.session_idle);
-        assert_eq!(config.general.session_idle_timeout, 600);
+        assert_eq!(config.general.session_idle_timeout, None);
+        // Effective timeout should match idle_timeout (300s default)
+        assert_eq!(config.general.effective_session_idle_timeout(), 300);
     }
 
     #[test]
@@ -146,20 +153,38 @@ mod tests {
         )
         .unwrap();
         assert!(!config.general.session_idle);
-        assert_eq!(config.general.session_idle_timeout, 900);
+        assert_eq!(config.general.session_idle_timeout, Some(900));
+        assert_eq!(config.general.effective_session_idle_timeout(), 900);
     }
 
     #[test]
-    fn session_idle_enabled_with_custom_timeout() {
+    fn session_idle_inherits_idle_timeout() {
         let config: Config = toml::from_str(
             r#"
             [general]
+            idle_timeout = 60
+            session_idle = true
+            "#,
+        )
+        .unwrap();
+        assert!(config.general.session_idle);
+        assert_eq!(config.general.session_idle_timeout, None);
+        // Should inherit idle_timeout
+        assert_eq!(config.general.effective_session_idle_timeout(), 60);
+    }
+
+    #[test]
+    fn session_idle_explicit_overrides_idle_timeout() {
+        let config: Config = toml::from_str(
+            r#"
+            [general]
+            idle_timeout = 60
             session_idle = true
             session_idle_timeout = 120
             "#,
         )
         .unwrap();
         assert!(config.general.session_idle);
-        assert_eq!(config.general.session_idle_timeout, 120);
+        assert_eq!(config.general.effective_session_idle_timeout(), 120);
     }
 }

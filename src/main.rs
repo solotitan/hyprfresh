@@ -88,8 +88,7 @@ fn run_daemon(cfg: config::Config) {
     let session_idle_active = Arc::new(AtomicBool::new(false));
     let session_idle_config = SessionIdleConfig {
         enabled: cfg.general.session_idle,
-        timeout_secs: cfg.general.session_idle_timeout,
-        screensaver: cfg.screensaver.name.clone(),
+        timeout_secs: cfg.general.effective_session_idle_timeout(),
         session_idle_active: session_idle_active.clone(),
     };
 
@@ -229,7 +228,6 @@ fn run_preview(screensaver_name: &str, monitor_filter: Option<&str>, duration: O
     let session_idle_config = SessionIdleConfig {
         enabled: false,
         timeout_secs: 0,
-        screensaver: screensaver_name.to_string(),
         session_idle_active: Arc::new(AtomicBool::new(false)),
     };
 

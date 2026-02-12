@@ -372,6 +372,31 @@ mod tests {
     }
 }
 
+/// Hide the hardware cursor by setting Hyprland's inactive_timeout to 1 second.
+/// Called when screensavers activate so the cursor doesn't float above the overlay.
+pub async fn hide_cursor() -> Result<(), Box<dyn std::error::Error>> {
+    hyprctl_dispatch("keyword cursor:inactive_timeout 1").await?;
+    Ok(())
+}
+
+/// Restore the hardware cursor by clearing Hyprland's inactive_timeout.
+/// Called when all screensavers stop.
+pub async fn show_cursor() -> Result<(), Box<dyn std::error::Error>> {
+    hyprctl_dispatch("keyword cursor:inactive_timeout 0").await?;
+    Ok(())
+}
+
+/// Send a raw command to Hyprland (non-JSON, for dispatchers/keywords)
+async fn hyprctl_dispatch(command: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let path = socket_path()?;
+    let mut stream = UnixStream::connect(&path).await?;
+    stream.write_all(command.as_bytes()).await?;
+    stream.shutdown().await?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await?;
+    Ok(response)
+}
+
 /// Listen for Hyprland events and send parsed events to the channel.
 ///
 /// Connects to Hyprland's socket2 (event socket) and streams events

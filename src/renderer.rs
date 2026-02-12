@@ -15,6 +15,7 @@
 //! - The tokio idle loop sends RendererCommands via calloop::channel
 //! - Frame callbacks drive the animation loop (compositor-synced vsync)
 
+use crate::ipc;
 use crate::screensavers;
 use log::{debug, info, warn};
 use raw_window_handle::{
@@ -165,10 +166,8 @@ pub struct SessionIdleConfig {
     pub enabled: bool,
     /// Session idle timeout in seconds
     pub timeout_secs: u64,
-    /// Default screensaver name for session-wide idle
-    pub screensaver: String,
     /// Shared flag: set to true when session-wide idle is active.
-    /// The idle loop reads this to know when to send StopAll on cursor movement.
+    /// The idle loop reads this to know when to start screensavers on all monitors.
     pub session_idle_active: Arc<AtomicBool>,
 }
 
@@ -374,6 +373,26 @@ impl WaylandState {
 
         let gpu = GpuContext::new(&conn)?;
 
+        // Create idle notification using an already-enumerated seat.
+        // SeatState::new() processes existing seats during registry_queue_init,
+        // so new_seat() never fires for them. We must create the notification here.
+        let idle_notification = if let Some(ref notifier) = idle_notifier {
+            let seats = seat_state.seats();
+            if let Some(seat) = seats.into_iter().next() {
+                let timeout_ms = (session_idle_config.timeout_secs * 1000) as u32;
+                info!(
+                    "Creating ext-idle-notify-v1 notification (timeout: {}s)",
+                    session_idle_config.timeout_secs
+                );
+                Some(notifier.get_idle_notification(timeout_ms, &seat, &qh, ()))
+            } else {
+                warn!("No seat available yet, idle notification deferred to new_seat()");
+                None
+            }
+        } else {
+            None
+        };
+
         let conn_clone = conn.clone();
         let qh_clone = event_queue.handle();
         Ok((
@@ -391,7 +410,7 @@ impl WaylandState {
                 exit: false,
                 pending_commands: Vec::new(),
                 idle_notifier,
-                idle_notification: None,
+                idle_notification,
                 session_idle_config,
             },
             event_queue,
@@ -582,6 +601,20 @@ impl WaylandState {
                 screensaver_name: screensaver_name.to_string(),
             },
         );
+
+        // Hide cursor when ALL monitors have active screensavers
+        if self.surfaces.len() == self.output_map.len() {
+            info!("All monitors have screensavers, hiding cursor");
+            std::thread::spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_io()
+                    .build()
+                    .unwrap();
+                if let Err(e) = rt.block_on(ipc::hide_cursor()) {
+                    warn!("Failed to hide cursor: {}", e);
+                }
+            });
+        }
     }
 
     /// Create a render pipeline for a screensaver shader
@@ -647,6 +680,19 @@ impl WaylandState {
             // Drop order matters: wgpu surface before layer surface
             drop(surface.wgpu_surface);
             drop(surface.layer);
+
+            // Restore cursor when last screensaver deactivates
+            if self.surfaces.is_empty() {
+                std::thread::spawn(|| {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_io()
+                        .build()
+                        .unwrap();
+                    if let Err(e) = rt.block_on(ipc::show_cursor()) {
+                        warn!("Failed to show cursor: {}", e);
+                    }
+                });
+            }
         }
     }
 
@@ -1029,23 +1075,24 @@ impl Dispatch<ExtIdleNotificationV1, ()> for WaylandState {
     ) {
         match event {
             ext_idle_notification_v1::Event::Idled => {
-                info!("Session-wide idle detected, starting screensavers on all monitors");
+                info!("Session-wide idle detected (ext-idle-notify-v1)");
+                // Set the flag — the idle loop watches this and sends
+                // per-monitor Start commands with correct screensaver names.
                 state
                     .session_idle_config
                     .session_idle_active
                     .store(true, Ordering::SeqCst);
-                let screensaver = state.session_idle_config.screensaver.clone();
-                state.queue_command(RendererCommand::StartAll { screensaver });
-                state.process_commands();
             }
             ext_idle_notification_v1::Event::Resumed => {
-                info!("Session-wide activity resumed, stopping all screensavers");
+                info!("Session-wide activity resumed");
+                // Just clear the flag — the idle loop handles selective
+                // per-monitor stops based on cursor position. We don't
+                // StopAll here because non-cursor monitors should keep
+                // their screensavers running.
                 state
                     .session_idle_config
                     .session_idle_active
                     .store(false, Ordering::SeqCst);
-                state.queue_command(RendererCommand::StopAll);
-                state.process_commands();
             }
             _ => {} // non_exhaustive
         }
@@ -1159,12 +1206,10 @@ mod tests {
         let config = SessionIdleConfig {
             enabled: true,
             timeout_secs: 600,
-            screensaver: "matrix".to_string(),
             session_idle_active: Arc::new(AtomicBool::new(false)),
         };
         assert!(config.enabled);
         assert_eq!(config.timeout_secs, 600);
-        assert_eq!(config.screensaver, "matrix");
         assert!(!config.session_idle_active.load(Ordering::SeqCst));
     }
 
@@ -1173,7 +1218,6 @@ mod tests {
         let config = SessionIdleConfig {
             enabled: false,
             timeout_secs: 0,
-            screensaver: "blank".to_string(),
             session_idle_active: Arc::new(AtomicBool::new(false)),
         };
         assert!(!config.enabled);
@@ -1185,7 +1229,6 @@ mod tests {
         let config = SessionIdleConfig {
             enabled: true,
             timeout_secs: 600,
-            screensaver: "matrix".to_string(),
             session_idle_active: flag.clone(),
         };
         assert!(!flag.load(Ordering::SeqCst));
