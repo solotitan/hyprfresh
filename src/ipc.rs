@@ -20,6 +20,7 @@ pub struct MonitorInfo {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    pub transform: u32,
     pub active_workspace_id: i32,
     pub focused: bool,
 }
@@ -76,15 +77,29 @@ pub async fn get_monitors() -> Result<Vec<MonitorInfo>, Box<dyn std::error::Erro
 
     let monitors = parsed
         .into_iter()
-        .map(|m| MonitorInfo {
-            id: m["id"].as_i64().unwrap_or(-1) as i32,
-            name: m["name"].as_str().unwrap_or("unknown").to_string(),
-            x: m["x"].as_i64().unwrap_or(0) as i32,
-            y: m["y"].as_i64().unwrap_or(0) as i32,
-            width: m["width"].as_u64().unwrap_or(0) as u32,
-            height: m["height"].as_u64().unwrap_or(0) as u32,
-            active_workspace_id: m["activeWorkspace"]["id"].as_i64().unwrap_or(0) as i32,
-            focused: m["focused"].as_bool().unwrap_or(false),
+        .map(|m| {
+            let raw_width = m["width"].as_u64().unwrap_or(0) as u32;
+            let raw_height = m["height"].as_u64().unwrap_or(0) as u32;
+            let transform = m["transform"].as_u64().unwrap_or(0) as u32;
+
+            // Transforms 1, 3, 5, 7 are 90/270 degree rotations — swap w/h
+            let (width, height) = if transform % 2 == 1 {
+                (raw_height, raw_width)
+            } else {
+                (raw_width, raw_height)
+            };
+
+            MonitorInfo {
+                id: m["id"].as_i64().unwrap_or(-1) as i32,
+                name: m["name"].as_str().unwrap_or("unknown").to_string(),
+                x: m["x"].as_i64().unwrap_or(0) as i32,
+                y: m["y"].as_i64().unwrap_or(0) as i32,
+                width,
+                height,
+                transform,
+                active_workspace_id: m["activeWorkspace"]["id"].as_i64().unwrap_or(0) as i32,
+                focused: m["focused"].as_bool().unwrap_or(false),
+            }
         })
         .collect();
 
@@ -244,6 +259,7 @@ mod tests {
                 y: 0,
                 width: 1920,
                 height: 1080,
+                transform: 0,
                 active_workspace_id: 1,
                 focused: true,
             },
@@ -254,6 +270,7 @@ mod tests {
                 y: 0,
                 width: 2560,
                 height: 1440,
+                transform: 0,
                 active_workspace_id: 2,
                 focused: false,
             },
@@ -275,6 +292,7 @@ mod tests {
             y: 0,
             width: 1920,
             height: 1080,
+            transform: 0,
             active_workspace_id: 1,
             focused: true,
         }];
@@ -292,6 +310,7 @@ mod tests {
             y: 0,
             width: 1920,
             height: 1080,
+            transform: 0,
             active_workspace_id: 1,
             focused: true,
         }];
@@ -303,6 +322,53 @@ mod tests {
         // At max edge -- should NOT be on monitor (exclusive upper bound)
         let cursor = CursorPos { x: 1920, y: 0 };
         assert_eq!(cursor_on_monitor(&cursor, &monitors), None);
+    }
+
+    #[test]
+    fn cursor_on_rotated_monitor() {
+        // Simulates: DP-3 portrait (transform=1, 2560x1440 -> 1440x2560) at x=-1440
+        //            DP-2 landscape (transform=0, 2560x1440) at x=0
+        // After transform swap, DP-3 spans x=-1440..0, DP-2 spans x=0..2560
+        let monitors = vec![
+            MonitorInfo {
+                id: 1,
+                name: "DP-3".to_string(),
+                x: -1440,
+                y: 0,
+                width: 1440,  // already swapped by get_monitors()
+                height: 2560,
+                transform: 1,
+                active_workspace_id: 6,
+                focused: false,
+            },
+            MonitorInfo {
+                id: 0,
+                name: "DP-2".to_string(),
+                x: 0,
+                y: 0,
+                width: 2560,
+                height: 1440,
+                transform: 0,
+                active_workspace_id: 4,
+                focused: true,
+            },
+        ];
+
+        // Cursor on DP-2 (main monitor)
+        let cursor = CursorPos { x: 720, y: 670 };
+        assert_eq!(cursor_on_monitor(&cursor, &monitors), Some("DP-2".to_string()));
+
+        // Cursor on DP-3 (portrait, left side)
+        let cursor = CursorPos { x: -500, y: 670 };
+        assert_eq!(cursor_on_monitor(&cursor, &monitors), Some("DP-3".to_string()));
+
+        // Cursor at boundary between monitors (x=0 is DP-2, not DP-3)
+        let cursor = CursorPos { x: 0, y: 500 };
+        assert_eq!(cursor_on_monitor(&cursor, &monitors), Some("DP-2".to_string()));
+
+        // Cursor at DP-3's right edge (x=-1 is still DP-3)
+        let cursor = CursorPos { x: -1, y: 500 };
+        assert_eq!(cursor_on_monitor(&cursor, &monitors), Some("DP-3".to_string()));
     }
 }
 

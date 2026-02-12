@@ -37,6 +37,8 @@ use smithay_client_toolkit::{
 };
 use std::collections::HashMap;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 use wayland_client::{
     globals::registry_queue_init,
@@ -165,6 +167,9 @@ pub struct SessionIdleConfig {
     pub timeout_secs: u64,
     /// Default screensaver name for session-wide idle
     pub screensaver: String,
+    /// Shared flag: set to true when session-wide idle is active.
+    /// The idle loop reads this to know when to send StopAll on cursor movement.
+    pub session_idle_active: Arc<AtomicBool>,
 }
 
 /// Main renderer state, driven by the calloop event loop
@@ -1024,12 +1029,20 @@ impl Dispatch<ExtIdleNotificationV1, ()> for WaylandState {
         match event {
             ext_idle_notification_v1::Event::Idled => {
                 info!("Session-wide idle detected, starting screensavers on all monitors");
+                state
+                    .session_idle_config
+                    .session_idle_active
+                    .store(true, Ordering::SeqCst);
                 let screensaver = state.session_idle_config.screensaver.clone();
                 state.queue_command(RendererCommand::StartAll { screensaver });
                 state.process_commands();
             }
             ext_idle_notification_v1::Event::Resumed => {
                 info!("Session-wide activity resumed, stopping all screensavers");
+                state
+                    .session_idle_config
+                    .session_idle_active
+                    .store(false, Ordering::SeqCst);
                 state.queue_command(RendererCommand::StopAll);
                 state.process_commands();
             }
@@ -1146,10 +1159,12 @@ mod tests {
             enabled: true,
             timeout_secs: 600,
             screensaver: "matrix".to_string(),
+            session_idle_active: Arc::new(AtomicBool::new(false)),
         };
         assert!(config.enabled);
         assert_eq!(config.timeout_secs, 600);
         assert_eq!(config.screensaver, "matrix");
+        assert!(!config.session_idle_active.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -1158,8 +1173,23 @@ mod tests {
             enabled: false,
             timeout_secs: 0,
             screensaver: "blank".to_string(),
+            session_idle_active: Arc::new(AtomicBool::new(false)),
         };
         assert!(!config.enabled);
+    }
+
+    #[test]
+    fn session_idle_active_flag_shared() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let config = SessionIdleConfig {
+            enabled: true,
+            timeout_secs: 600,
+            screensaver: "matrix".to_string(),
+            session_idle_active: flag.clone(),
+        };
+        assert!(!flag.load(Ordering::SeqCst));
+        config.session_idle_active.store(true, Ordering::SeqCst);
+        assert!(flag.load(Ordering::SeqCst));
     }
 
     #[test]

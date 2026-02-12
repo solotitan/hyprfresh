@@ -13,6 +13,8 @@ use crate::ipc::{self, HyprEvent};
 use crate::renderer::RendererCommand;
 use log::{debug, info, warn};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
@@ -20,7 +22,7 @@ use tokio::time::{self, Duration};
 /// Per-monitor idle state
 #[derive(Debug)]
 struct MonitorIdleState {
-    /// Last time the cursor was seen on this monitor
+    /// Last time activity was detected on this monitor
     last_active: Instant,
     /// Whether the screensaver is currently showing on this monitor
     screensaver_active: bool,
@@ -28,17 +30,24 @@ struct MonitorIdleState {
 
 /// Run the main idle detection daemon loop
 ///
-/// Polls Hyprland IPC for cursor position and monitor layout, tracks
-/// per-monitor idle time, and sends start/stop commands to the renderer.
+/// Polls Hyprland IPC for cursor position, monitor layout, and focus state.
+/// A monitor is considered active if:
+/// - The cursor is on it AND has moved since last poll, OR
+/// - It is the focused monitor (Hyprland reports keyboard focus here)
+///
+/// Sends [`RendererCommand`]s to the renderer via an mpsc channel when
+/// monitors transition between idle and active states.
 pub async fn run_idle_loop(
     config: Config,
     tx: mpsc::Sender<RendererCommand>,
+    session_idle_active: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let poll_interval = Duration::from_millis(config.general.poll_interval);
     let idle_timeout = Duration::from_secs(config.general.idle_timeout);
 
     let mut monitor_states: HashMap<String, MonitorIdleState> = HashMap::new();
     let mut last_cursor_monitor: Option<String> = None;
+    let mut last_cursor_pos: Option<(i32, i32)> = None;
 
     info!(
         "Idle loop started: poll={}ms, timeout={}s",
@@ -67,8 +76,21 @@ pub async fn run_idle_loop(
             }
         };
 
+        // Detect cursor movement (position changed since last poll)
+        let cursor_moved = match last_cursor_pos {
+            Some((lx, ly)) => cursor.x != lx || cursor.y != ly,
+            None => false,
+        };
+        last_cursor_pos = Some((cursor.x, cursor.y));
+
         // Determine which monitor the cursor is on
         let current_monitor = ipc::cursor_on_monitor(&cursor, &monitors);
+
+        // Determine which monitor has keyboard focus (user is typing here)
+        let focused_monitor: Option<String> = monitors
+            .iter()
+            .find(|m| m.focused)
+            .map(|m| m.name.clone());
 
         // Initialize state for any new monitors
         let now = Instant::now();
@@ -90,7 +112,6 @@ pub async fn run_idle_loop(
                     let cmd = RendererCommand::MonitorRemoved {
                         monitor: name.clone(),
                     };
-                    // Best-effort send; if renderer is gone we're shutting down anyway
                     let _ = tx.try_send(cmd);
                 }
                 false
@@ -99,21 +120,69 @@ pub async fn run_idle_loop(
             }
         });
 
-        // Update the active monitor's last_active timestamp
-        if let Some(ref name) = current_monitor
-            && let Some(state) = monitor_states.get_mut(name)
+        // Sync session-wide idle state: if the renderer flagged session idle
+        // as active, mark all monitors as having screensavers
+        if session_idle_active.load(Ordering::SeqCst) {
+            for state in monitor_states.values_mut() {
+                state.screensaver_active = true;
+            }
+        }
+
+        // --- Activity detection ---
+        // The focused monitor is always considered active (keyboard input).
+        // The cursor's monitor is active if the cursor moved.
+
+        // Reset timer on the focused monitor (keyboard activity)
+        if let Some(ref fname) = focused_monitor
+            && let Some(state) = monitor_states.get_mut(fname)
         {
             state.last_active = now;
 
-            // If screensaver was active on this monitor, stop it
+            // If screensaver is on the focused monitor, stop it immediately
             if state.screensaver_active {
-                info!("Activity detected on {}, stopping screensaver", name);
+                info!("Keyboard focus on {}, stopping screensaver", fname);
                 state.screensaver_active = false;
                 let cmd = RendererCommand::Stop {
-                    monitor: name.clone(),
+                    monitor: fname.clone(),
                 };
                 if let Err(e) = tx.send(cmd).await {
                     warn!("Failed to send stop command: {}", e);
+                }
+            }
+        }
+
+        // Handle cursor movement
+        if cursor_moved {
+            if let Some(ref name) = current_monitor
+                && let Some(state) = monitor_states.get_mut(name)
+            {
+                state.last_active = now;
+
+                // Stop screensaver on the monitor the cursor moved on
+                if state.screensaver_active {
+                    info!("Cursor movement on {}, stopping screensaver", name);
+                    state.screensaver_active = false;
+                    let cmd = RendererCommand::Stop {
+                        monitor: name.clone(),
+                    };
+                    if let Err(e) = tx.send(cmd).await {
+                        warn!("Failed to send stop command: {}", e);
+                    }
+                }
+            }
+
+            // If session-wide idle is active, any cursor movement should
+            // dismiss ALL screensavers (the compositor will also send Resumed)
+            if session_idle_active.load(Ordering::SeqCst) {
+                let any_active = monitor_states.values().any(|s| s.screensaver_active);
+                if any_active {
+                    info!("Cursor movement during session idle, stopping all screensavers");
+                    for state in monitor_states.values_mut() {
+                        state.screensaver_active = false;
+                    }
+                    if let Err(e) = tx.send(RendererCommand::StopAll).await {
+                        warn!("Failed to send stop-all command: {}", e);
+                    }
                 }
             }
         }
@@ -154,7 +223,6 @@ pub async fn run_idle_loop(
                 );
                 state.screensaver_active = true;
 
-                // Determine which screensaver to use
                 let screensaver_name = config
                     .monitors
                     .get(name)
