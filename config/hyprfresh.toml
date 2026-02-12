@@ -17,7 +17,7 @@ session_idle = true
 # session_idle_timeout = 600
 
 [screensaver]
-# Which screensaver to use: "blank", "matrix", "starfield"
+# Which screensaver to use: "blank", "matrix", "plasmula", "starfield"
 name = "matrix"
 
 # Target FPS for animation (default: 30)
