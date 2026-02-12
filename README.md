@@ -82,7 +82,7 @@ Edit `~/.config/hypr/hyprfresh.toml`:
 ```toml
 [general]
 idle_timeout = 300          # 5 minutes per-monitor
-poll_interval = 1000        # Check cursor every 1s
+poll_interval = 500         # Check cursor every 500ms
 session_idle = true         # Also use session-wide idle
 session_idle_timeout = 600  # 10 min for all monitors
 
