@@ -75,7 +75,7 @@ fn default_idle_timeout() -> u64 {
     300
 }
 fn default_poll_interval() -> u64 {
-    1000
+    500
 }
 fn default_session_timeout() -> u64 {
     600

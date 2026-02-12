@@ -5,8 +5,8 @@
 # Per-monitor idle timeout in seconds (default: 300 = 5 minutes)
 idle_timeout = 300
 
-# How often to poll cursor position in milliseconds (default: 1000)
-poll_interval = 1000
+# How often to poll cursor position in milliseconds (default: 500)
+poll_interval = 500
 
 # Also use session-wide idle detection via ext-idle-notify-v1
 session_idle = true
