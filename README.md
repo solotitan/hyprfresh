@@ -125,14 +125,32 @@ hyprfresh --config /path/to/config.toml
 
 ## Screensavers
 
-| Name | Description |
-|------|-------------|
-| `blank` | Black screen -- OLED-friendly, minimal power draw |
-| `matrix` | Matrix digital rain -- green glyphs cascading down the screen |
-| `plasmula` | Dark plasma waves -- electric purple (`#6000FF`), neon green (`#00FF6C`), deep teal, warm amber |
-| `starfield` | Classic starfield fly-through -- stars streaming past the camera |
+### Matrix
 
-Custom shaders can be placed in `~/.config/hypr/hyprfresh/shaders/` as `.wgsl` files. The filename (without extension) becomes the screensaver name. Custom shaders override built-ins with the same name.
+Matrix digital rain -- green glyphs cascading down the screen.
+
+<!-- Replace the src URL after uploading your recording to a GitHub issue/PR -->
+<video src="https://github.com/user-attachments/assets/REPLACE_MATRIX" width="800" autoplay loop muted playsinline></video>
+
+### Plasmula
+
+Dark plasma waves -- electric purple (`#6000FF`), neon green (`#00FF6C`), deep teal, warm amber.
+
+<video src="https://github.com/user-attachments/assets/REPLACE_PLASMULA" width="800" autoplay loop muted playsinline></video>
+
+### Starfield
+
+Classic starfield fly-through -- stars streaming past the camera.
+
+<video src="https://github.com/user-attachments/assets/REPLACE_STARFIELD" width="800" autoplay loop muted playsinline></video>
+
+### Blank
+
+Black screen -- OLED-friendly, minimal power draw. No preview needed.
+
+### Custom Shaders
+
+Place `.wgsl` files in `~/.config/hypr/hyprfresh/shaders/`. The filename (without extension) becomes the screensaver name. Custom shaders override built-ins with the same name.
 
 ## Architecture
 
