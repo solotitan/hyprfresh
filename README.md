@@ -66,11 +66,22 @@ This installs:
 ## Autostart
 
 **Option A: systemd (recommended)**
+
+The service is `WantedBy=graphical-session.target`, so you need Hyprland to activate that target. Add this to your `hyprland.conf` (or startup config):
+
+```conf
+exec-once = systemctl --user start graphical-session.target
+```
+
+Then enable the service:
+
 ```bash
 systemctl --user enable --now hyprfresh.service
 ```
 
-**Option B: hyprland.conf**
+> **Note:** Without the `graphical-session.target` line, the service won't auto-start on login — Hyprland doesn't activate this target by default.
+
+**Option B: hyprland.conf (direct)**
 ```conf
 exec-once = hyprfresh
 ```
