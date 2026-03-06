@@ -135,15 +135,15 @@ struct MonitorSurface {
     /// The SCTK layer surface
     layer: LayerSurface,
     /// wgpu surface bound to the layer's wl_surface
-    wgpu_surface: wgpu::Surface<'static>,
+    wgpu_surface: Option<wgpu::Surface<'static>>,
     /// Render pipeline for this monitor's screensaver
-    pipeline: wgpu::RenderPipeline,
+    pipeline: Option<wgpu::RenderPipeline>,
     /// Uniform buffer
     uniform_buffer: wgpu::Buffer,
     /// Bind group
     bind_group: wgpu::BindGroup,
     /// Surface format
-    format: wgpu::TextureFormat,
+    format: Option<wgpu::TextureFormat>,
     /// Current dimensions
     width: u32,
     height: u32,
@@ -524,24 +524,6 @@ impl WaylandState {
         // Initial commit triggers configure from compositor
         layer.commit();
 
-        // Create wgpu surface from the raw Wayland handles
-        let raw_display = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(
-            NonNull::new(self.conn.backend().display_ptr() as *mut _).unwrap(),
-        ));
-        let raw_window = RawWindowHandle::Wayland(WaylandWindowHandle::new(
-            NonNull::new(layer.wl_surface().id().as_ptr() as *mut _).unwrap(),
-        ));
-
-        let wgpu_surface = unsafe {
-            self.gpu
-                .instance
-                .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                    raw_display_handle: raw_display,
-                    raw_window_handle: raw_window,
-                })
-                .expect("failed to create wgpu surface")
-        };
-
         // Create uniform buffer
         let uniform_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("uniforms"),
@@ -563,37 +545,15 @@ impl WaylandState {
                 }],
             });
 
-        // Build shader and pipeline (will be finalized on first configure when we know the format)
-        // For now, use a placeholder format -- we'll rebuild on configure
-        let shader_source = build_shader_source(screensaver_name);
-        let shader = self
-            .gpu
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(screensaver_name),
-                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-            });
-
-        // We need the surface format from capabilities, but we can't get that until
-        // the surface is configured. Use a default and reconfigure on first configure.
-        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-
-        let pipeline = Self::create_pipeline(
-            &self.gpu.device,
-            &self.gpu.bind_group_layout,
-            &shader,
-            format,
-        );
-
         self.surfaces.insert(
             output_name.to_string(),
             MonitorSurface {
                 layer,
-                wgpu_surface,
-                pipeline,
+                wgpu_surface: None,
+                pipeline: None,
                 uniform_buffer,
                 bind_group,
-                format,
+                format: None,
                 width: 0,
                 height: 0,
                 configured: false,
@@ -675,10 +635,12 @@ impl WaylandState {
 
     /// Stop the screensaver on a specific monitor
     fn stop_screensaver(&mut self, output_name: &str) {
-        if let Some(surface) = self.surfaces.remove(output_name) {
+        if let Some(mut surface) = self.surfaces.remove(output_name) {
             info!("Stopping screensaver on {}", output_name);
             // Drop order matters: wgpu surface before layer surface
-            drop(surface.wgpu_surface);
+            if let Some(wgpu_surface) = surface.wgpu_surface.take() {
+                drop(wgpu_surface);
+            }
             drop(surface.layer);
 
             // Restore cursor when last screensaver deactivates
@@ -714,11 +676,16 @@ impl WaylandState {
     }
 
     /// Render a frame for a specific monitor
-    fn render_frame(&self, output_name: &str) {
-        let surface = match self.surfaces.get(output_name) {
+    fn render_frame(&mut self, output_name: &str) -> bool {
+        let surface = match self.surfaces.get_mut(output_name) {
             Some(s) if s.configured => s,
-            _ => return,
+            _ => return false,
         };
+
+        if surface.wgpu_surface.is_none() || surface.pipeline.is_none() {
+            surface.configured = false;
+            return false;
+        }
 
         let elapsed = surface.start_time.elapsed().as_secs_f32();
         let uniforms = Uniforms {
@@ -731,11 +698,31 @@ impl WaylandState {
             .queue
             .write_buffer(&surface.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
-        let frame = match surface.wgpu_surface.get_current_texture() {
-            Ok(f) => f,
-            Err(e) => {
-                warn!("Failed to get swapchain texture for {}: {}", output_name, e);
-                return;
+        let frame = match surface.wgpu_surface.as_ref() {
+            Some(wgpu_surface) => match wgpu_surface.get_current_texture() {
+                Ok(frame) => frame,
+                Err(wgpu::SurfaceError::Timeout) => {
+                    debug!("Timed out acquiring swapchain texture for {}", output_name);
+                    return true;
+                }
+                Err(e) => {
+                    warn!(
+                        "Invalidating render resources for {} after surface error: {}",
+                        output_name, e
+                    );
+                    surface.wgpu_surface = None;
+                    surface.pipeline = None;
+                    surface.format = None;
+                    surface.configured = false;
+                    return false;
+                }
+            },
+            None => {
+                warn!("Render resources missing for {}, stopping frame loop", output_name);
+                surface.pipeline = None;
+                surface.format = None;
+                surface.configured = false;
+                return false;
             }
         };
 
@@ -765,7 +752,7 @@ impl WaylandState {
                 occlusion_query_set: None,
             });
 
-            pass.set_pipeline(&surface.pipeline);
+            pass.set_pipeline(surface.pipeline.as_ref().expect("pipeline must exist when configured"));
             pass.set_bind_group(0, &surface.bind_group, &[]);
             pass.set_vertex_buffer(0, self.gpu.vertex_buffer.slice(..));
             pass.set_index_buffer(self.gpu.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
@@ -774,12 +761,15 @@ impl WaylandState {
 
         self.gpu.queue.submit(Some(encoder.finish()));
         frame.present();
+        true
     }
 
     /// Request the next frame callback for a monitor
     fn request_frame(&self, output_name: &str, qh: &QueueHandle<Self>) {
         if let Some(surface) = self.surfaces.get(output_name)
             && surface.configured
+            && surface.wgpu_surface.is_some()
+            && surface.pipeline.is_some()
         {
             let wl_surf = surface.layer.wl_surface();
             wl_surf.frame(qh, wl_surf.clone());
@@ -826,8 +816,9 @@ impl CompositorHandler for WaylandState {
             .find(|(_, s)| s.layer.wl_surface() == surface)
             .map(|(name, _)| name.clone());
 
-        if let Some(name) = output_name {
-            self.render_frame(&name);
+        if let Some(name) = output_name
+            && self.render_frame(&name)
+        {
             self.request_frame(&name, qh);
         }
     }
@@ -926,15 +917,53 @@ impl LayerShellHandler for WaylandState {
 
         let Some(name) = output_name else { return };
 
-        let (w, h) = configure.new_size;
-        let width = if w == 0 { 1920 } else { w };
-        let height = if h == 0 { 1080 } else { h };
+        let Some((width, height)) = validated_configure_size(configure.new_size) else {
+            info!("Ignoring zero-sized configure on {}", name);
+            if let Some(surface) = self.surfaces.get_mut(&name) {
+                surface.width = 0;
+                surface.height = 0;
+                surface.configured = false;
+            }
+            return;
+        };
 
         info!("Configure layer surface on {}: {}x{}", name, width, height);
 
+        let needs_wgpu_surface = self
+            .surfaces
+            .get(&name)
+            .map(|surface| surface.wgpu_surface.is_none())
+            .unwrap_or(false);
+
+        let new_wgpu_surface = if needs_wgpu_surface {
+            match create_wgpu_surface(&self.conn, layer, &self.gpu.instance) {
+                Ok(surface) => Some(surface),
+                Err(e) => {
+                    warn!("Failed to create wgpu surface for {}: {}", name, e);
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+
         // Get the actual surface format from capabilities
         let surface = self.surfaces.get_mut(&name).unwrap();
-        let caps = surface.wgpu_surface.get_capabilities(&self.gpu.adapter);
+        if surface.wgpu_surface.is_none() {
+            surface.wgpu_surface = new_wgpu_surface;
+        }
+
+        let Some(wgpu_surface) = surface.wgpu_surface.as_ref() else {
+            return;
+        };
+
+        let caps = wgpu_surface.get_capabilities(&self.gpu.adapter);
+
+        if caps.formats.is_empty() {
+            warn!("No supported surface formats reported for {}", name);
+            surface.configured = false;
+            return;
+        }
 
         let format = caps
             .formats
@@ -951,7 +980,7 @@ impl LayerShellHandler for WaylandState {
         };
 
         // Configure the wgpu surface
-        surface.wgpu_surface.configure(
+        wgpu_surface.configure(
             &self.gpu.device,
             &wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -966,7 +995,7 @@ impl LayerShellHandler for WaylandState {
         );
 
         // Rebuild pipeline if format changed
-        if format != surface.format {
+        if surface.pipeline.is_none() || surface.format != Some(format) {
             let shader_source = build_shader_source(&surface.screensaver_name);
             let shader = self
                 .gpu
@@ -975,13 +1004,13 @@ impl LayerShellHandler for WaylandState {
                     label: Some(&surface.screensaver_name),
                     source: wgpu::ShaderSource::Wgsl(shader_source.into()),
                 });
-            surface.pipeline = Self::create_pipeline(
+            surface.pipeline = Some(Self::create_pipeline(
                 &self.gpu.device,
                 &self.gpu.bind_group_layout,
                 &shader,
                 format,
-            );
-            surface.format = format;
+            ));
+            surface.format = Some(format);
         }
 
         surface.width = width;
@@ -990,8 +1019,9 @@ impl LayerShellHandler for WaylandState {
 
         // Render first frame and start the frame callback chain
         let name_clone = name.clone();
-        self.render_frame(&name_clone);
-        self.request_frame(&name_clone, qh);
+        if self.render_frame(&name_clone) {
+            self.request_frame(&name_clone, qh);
+        }
     }
 }
 
@@ -1127,6 +1157,35 @@ fn output_name_from_info(info: &OutputInfo) -> String {
         .unwrap_or_else(|| format!("output-{}", info.id))
 }
 
+fn validated_configure_size(size: (u32, u32)) -> Option<(u32, u32)> {
+    let (width, height) = size;
+    if width == 0 || height == 0 {
+        None
+    } else {
+        Some((width, height))
+    }
+}
+
+fn create_wgpu_surface(
+    conn: &Connection,
+    layer: &LayerSurface,
+    instance: &wgpu::Instance,
+) -> Result<wgpu::Surface<'static>, wgpu::CreateSurfaceError> {
+    let raw_display = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(
+        NonNull::new(conn.backend().display_ptr() as *mut _).unwrap(),
+    ));
+    let raw_window = RawWindowHandle::Wayland(WaylandWindowHandle::new(
+        NonNull::new(layer.wl_surface().id().as_ptr() as *mut _).unwrap(),
+    ));
+
+    unsafe {
+        instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+            raw_display_handle: raw_display,
+            raw_window_handle: raw_window,
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests (command-level only; Wayland tests need a compositor)
 // ---------------------------------------------------------------------------
@@ -1181,7 +1240,7 @@ mod tests {
     // These test the RendererCommand enum itself.
     #[test]
     fn renderer_command_variants() {
-        let cmds = vec![
+        let cmds = [
             RendererCommand::Start {
                 monitor: "DP-1".into(),
                 screensaver: "matrix".into(),
@@ -1248,5 +1307,17 @@ mod tests {
             }
             _ => panic!("Expected StartAll"),
         }
+    }
+
+    #[test]
+    fn zero_sized_configure_is_ignored() {
+        assert_eq!(validated_configure_size((0, 1080)), None);
+        assert_eq!(validated_configure_size((1920, 0)), None);
+        assert_eq!(validated_configure_size((0, 0)), None);
+    }
+
+    #[test]
+    fn non_zero_configure_is_accepted() {
+        assert_eq!(validated_configure_size((1920, 1080)), Some((1920, 1080)));
     }
 }
