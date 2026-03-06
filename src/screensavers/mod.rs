@@ -174,8 +174,11 @@ mod tests {
     #[test]
     fn builtin_names_are_valid() {
         assert!(is_valid("blank"));
+
         assert!(is_valid("matrix"));
         assert!(is_valid("plasmula"));
+
+
         assert!(is_valid("starfield"));
     }
 

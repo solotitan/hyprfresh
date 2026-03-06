@@ -120,9 +120,10 @@ pub async fn run_idle_loop(
         });
 
         // --- Cursor activity: update which monitor the cursor is on ---
-        if let Some(ref name) = current_monitor {
-            if let Some(state) = monitor_states.get_mut(name) {
-                if cursor_moved {
+        if let Some(ref name) = current_monitor
+            && let Some(state) = monitor_states.get_mut(name)
+        {
+            if cursor_moved {
                     state.last_cursor_seen = now;
 
                     // Wake this monitor if screensaver is active
@@ -138,11 +139,10 @@ pub async fn run_idle_loop(
                             warn!("Failed to send stop command: {}", e);
                         }
                     }
-                } else {
-                    // Cursor is on this monitor but didn't move — still "present"
-                    // (the user might be typing; ext-idle-notify handles that)
-                    state.last_cursor_seen = now;
-                }
+            } else {
+                // Cursor is on this monitor but didn't move — still "present"
+                // (the user might be typing; ext-idle-notify handles that)
+                state.last_cursor_seen = now;
             }
         }
 
@@ -164,10 +164,10 @@ pub async fn run_idle_loop(
                 if state.screensaver_active {
                     continue;
                 }
-                if let Some(mon_cfg) = config.monitors.get(name) {
-                    if mon_cfg.disabled {
-                        continue;
-                    }
+                if let Some(mon_cfg) = config.monitors.get(name)
+                    && mon_cfg.disabled
+                {
+                    continue;
                 }
 
                 let screensaver_name = config
@@ -232,10 +232,10 @@ pub async fn run_idle_loop(
                 }
 
                 // Skip disabled monitors
-                if let Some(mon_cfg) = config.monitors.get(name) {
-                    if mon_cfg.disabled {
-                        continue;
-                    }
+                if let Some(mon_cfg) = config.monitors.get(name)
+                    && mon_cfg.disabled
+                {
+                    continue;
                 }
 
                 // Skip the monitor the cursor is currently on — that's the

@@ -137,7 +137,7 @@ fn event_socket_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
 
 /// Hyprland events we care about
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HyprEvent {
     /// A monitor was connected
     MonitorAdded(String),
@@ -179,6 +179,92 @@ fn parse_event(line: &str) -> HyprEvent {
     } else {
         HyprEvent::Other(line.to_string())
     }
+}
+
+fn parse_event_chunk(pending: &mut String, chunk: &str) -> Vec<HyprEvent> {
+    pending.push_str(chunk);
+
+    let mut events = Vec::new();
+    while let Some(newline_idx) = pending.find('\n') {
+        let mut line = pending[..newline_idx].to_string();
+        if line.ends_with('\r') {
+            line.pop();
+        }
+        pending.drain(..=newline_idx);
+
+        if line.is_empty() {
+            continue;
+        }
+
+        events.push(parse_event(&line));
+    }
+
+    events
+}
+
+/// Hide the hardware cursor by setting Hyprland's inactive_timeout to 1 second.
+/// Called when screensavers activate so the cursor doesn't float above the overlay.
+pub async fn hide_cursor() -> Result<(), Box<dyn std::error::Error>> {
+    hyprctl_dispatch("keyword cursor:inactive_timeout 1").await?;
+    Ok(())
+}
+
+/// Restore the hardware cursor by clearing Hyprland's inactive_timeout.
+/// Called when all screensavers stop.
+pub async fn show_cursor() -> Result<(), Box<dyn std::error::Error>> {
+    hyprctl_dispatch("keyword cursor:inactive_timeout 0").await?;
+    Ok(())
+}
+
+/// Send a raw command to Hyprland (non-JSON, for dispatchers/keywords)
+async fn hyprctl_dispatch(command: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let path = socket_path()?;
+    let mut stream = UnixStream::connect(&path).await?;
+    stream.write_all(command.as_bytes()).await?;
+    stream.shutdown().await?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await?;
+    Ok(response)
+}
+
+/// Listen for Hyprland events and send parsed events to the channel.
+///
+/// Connects to Hyprland's socket2 (event socket) and streams events
+/// until the socket closes or the receiver is dropped.
+pub async fn listen_events(
+    tx: tokio::sync::mpsc::Sender<HyprEvent>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = event_socket_path()?;
+    let mut stream = UnixStream::connect(&path).await?;
+    let mut buf = vec![0u8; 4096];
+    let mut pending = String::new();
+
+    debug!("Connected to Hyprland event socket at {:?}", path);
+
+    loop {
+        let n = stream.read(&mut buf).await?;
+        if n == 0 {
+            error!("Hyprland event socket closed");
+            break;
+        }
+        let data = String::from_utf8_lossy(&buf[..n]);
+        for event in parse_event_chunk(&mut pending, &data) {
+            debug!("Hyprland event: {:?}", event);
+            if tx.send(event).await.is_err() {
+                // Receiver dropped, we're shutting down
+                return Ok(());
+            }
+        }
+    }
+
+    let final_line = pending.trim_end_matches('\r');
+    if !final_line.is_empty() {
+        let event = parse_event(final_line);
+        debug!("Hyprland trailing event: {:?}", event);
+        let _ = tx.send(event).await;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -250,6 +336,38 @@ mod tests {
     }
 
     #[test]
+    fn parse_event_chunk_buffers_partial_lines() {
+        let mut pending = String::new();
+
+        let first = parse_event_chunk(&mut pending, "monitorrem");
+        assert!(first.is_empty());
+        assert_eq!(pending, "monitorrem");
+
+        let second = parse_event_chunk(&mut pending, "oved>>DP-1\n");
+        assert_eq!(second, vec![HyprEvent::MonitorRemoved("DP-1".to_string())]);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn parse_event_chunk_keeps_trailing_partial_event() {
+        let mut pending = String::new();
+
+        let events = parse_event_chunk(
+            &mut pending,
+            "monitoradded>>DP-1\nfocusedmon>>DP-2,3\nworkspace",
+        );
+
+        assert_eq!(
+            events,
+            vec![
+                HyprEvent::MonitorAdded("DP-1".to_string()),
+                HyprEvent::FocusedMonitor("DP-2".to_string()),
+            ]
+        );
+        assert_eq!(pending, "workspace");
+    }
+
+    #[test]
     fn cursor_on_monitor_hit() {
         let monitors = vec![
             MonitorInfo {
@@ -315,27 +433,22 @@ mod tests {
             focused: true,
         }];
 
-        // Exactly at origin -- should be on monitor
         let cursor = CursorPos { x: 0, y: 0 };
         assert_eq!(cursor_on_monitor(&cursor, &monitors), Some("DP-1".to_string()));
 
-        // At max edge -- should NOT be on monitor (exclusive upper bound)
         let cursor = CursorPos { x: 1920, y: 0 };
         assert_eq!(cursor_on_monitor(&cursor, &monitors), None);
     }
 
     #[test]
     fn cursor_on_rotated_monitor() {
-        // Simulates: DP-3 portrait (transform=1, 2560x1440 -> 1440x2560) at x=-1440
-        //            DP-2 landscape (transform=0, 2560x1440) at x=0
-        // After transform swap, DP-3 spans x=-1440..0, DP-2 spans x=0..2560
         let monitors = vec![
             MonitorInfo {
                 id: 1,
                 name: "DP-3".to_string(),
                 x: -1440,
                 y: 0,
-                width: 1440,  // already swapped by get_monitors()
+                width: 1440,
                 height: 2560,
                 transform: 1,
                 active_workspace_id: 6,
@@ -354,81 +467,16 @@ mod tests {
             },
         ];
 
-        // Cursor on DP-2 (main monitor)
         let cursor = CursorPos { x: 720, y: 670 };
         assert_eq!(cursor_on_monitor(&cursor, &monitors), Some("DP-2".to_string()));
 
-        // Cursor on DP-3 (portrait, left side)
         let cursor = CursorPos { x: -500, y: 670 };
         assert_eq!(cursor_on_monitor(&cursor, &monitors), Some("DP-3".to_string()));
 
-        // Cursor at boundary between monitors (x=0 is DP-2, not DP-3)
         let cursor = CursorPos { x: 0, y: 500 };
         assert_eq!(cursor_on_monitor(&cursor, &monitors), Some("DP-2".to_string()));
 
-        // Cursor at DP-3's right edge (x=-1 is still DP-3)
         let cursor = CursorPos { x: -1, y: 500 };
         assert_eq!(cursor_on_monitor(&cursor, &monitors), Some("DP-3".to_string()));
     }
-}
-
-/// Hide the hardware cursor by setting Hyprland's inactive_timeout to 1 second.
-/// Called when screensavers activate so the cursor doesn't float above the overlay.
-pub async fn hide_cursor() -> Result<(), Box<dyn std::error::Error>> {
-    hyprctl_dispatch("keyword cursor:inactive_timeout 1").await?;
-    Ok(())
-}
-
-/// Restore the hardware cursor by clearing Hyprland's inactive_timeout.
-/// Called when all screensavers stop.
-pub async fn show_cursor() -> Result<(), Box<dyn std::error::Error>> {
-    hyprctl_dispatch("keyword cursor:inactive_timeout 0").await?;
-    Ok(())
-}
-
-/// Send a raw command to Hyprland (non-JSON, for dispatchers/keywords)
-async fn hyprctl_dispatch(command: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let path = socket_path()?;
-    let mut stream = UnixStream::connect(&path).await?;
-    stream.write_all(command.as_bytes()).await?;
-    stream.shutdown().await?;
-    let mut response = String::new();
-    stream.read_to_string(&mut response).await?;
-    Ok(response)
-}
-
-/// Listen for Hyprland events and send parsed events to the channel.
-///
-/// Connects to Hyprland's socket2 (event socket) and streams events
-/// until the socket closes or the receiver is dropped.
-pub async fn listen_events(
-    tx: tokio::sync::mpsc::Sender<HyprEvent>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let path = event_socket_path()?;
-    let mut stream = UnixStream::connect(&path).await?;
-    let mut buf = vec![0u8; 4096];
-
-    debug!("Connected to Hyprland event socket at {:?}", path);
-
-    loop {
-        let n = stream.read(&mut buf).await?;
-        if n == 0 {
-            error!("Hyprland event socket closed");
-            break;
-        }
-        let data = String::from_utf8_lossy(&buf[..n]);
-        for line in data.lines() {
-            if line.is_empty() {
-                continue;
-            }
-            let event = parse_event(line);
-            debug!("Hyprland event: {:?}", event);
-            if tx.send(event).await.is_err() {
-                // Receiver dropped, we're shutting down
-                return Ok(());
-            }
-        }
-    }
-
-    Ok(())
 }
